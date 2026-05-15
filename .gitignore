@@ -1,0 +1,101 @@
+# Julia build artifacts
+*.ji
+*.so
+*.dll
+*.dylib
+*.jl.cov
+*.jl.*.cov
+*.jl.mem
+/deps/deps.jl
+
+# Julia package compiled cache
+/.julia/
+.julia_history
+
+# Precompile cache (auto-regenerated on Pkg.precompile)
+/compiled/
+
+# Julia package manager
+/Manifest.toml.backup
+
+# PRIMUS monorepo — never include parent repo content
+../../
+../PRIMUS_Core/
+../MORK/
+../MorkSupercompiler/
+../MORKTensorNetworks/
+../PathMap/
+../HPC/
+
+# Secrets & credentials
+.env
+.env.*
+*.secret
+secrets/
+credentials/
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa
+id_ed25519
+*.token
+auth.json
+config.local.*
+
+# API keys / tokens in any form
+*api_key*
+*api-key*
+*apikey*
+*secret_key*
+*SECRET*
+*.credentials
+
+# Server runtime files
+*.log
+*.pid
+nohup.out
+.primus_server.log
+server.log
+
+# OS / editor noise
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+*.swp
+*.swo
+*~
+.idea/
+.vscode/settings.json
+.vscode/launch.json
+
+# Test / benchmark outputs
+/tmp/
+benchmark_results/
+*.prof
+
+# Jupyter / notebooks
+.ipynb_checkpoints/
+*.ipynb
+
+# Coverage
+lcov.info
+coverage/
+*.covdb
+
+# Docs build
+/docs/build/
+/docs/site/
+
+# ACT (MORK binary format) files
+*.act
+
+# Temporary files
+*.tmp
+*.bak
+*.orig
+Manifest.toml
