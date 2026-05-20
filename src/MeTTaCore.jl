@@ -38,6 +38,7 @@ include("space/CoreSpace.jl")
 include("parser/Parser.jl")
 include("primitives/Primitives.jl")
 include("primitives/AtomOps.jl")
+include("primitives/WilliamPrimitives.jl")
 include("eval/Eval.jl")
 
 # stdlib directory relative to this package root
@@ -51,7 +52,7 @@ Pure MeTTa rules — hot-reloadable, introspectable, no recompile needed.
 """
 function load_stdlib!(space::CoreSpace)
     # Load in dependency order: types first, then core (uses types), then list/math
-    for fname in ["types.metta", "core.metta", "list.metta", "math.metta"]
+    for fname in ["types.metta", "core.metta", "list.metta", "math.metta", "william.metta"]
         path = joinpath(_STDLIB_DIR, fname)
         isfile(path) || continue
         try
@@ -90,6 +91,7 @@ function register_all_primitives!(eval_fn::Union{Function,Nothing} = nothing)
                 to_sexpr(r)
             end)
     )
+    _register_william_primitives!()  # compression-score (session 3c)
 end
 
 export CoreSpace, new_core_space

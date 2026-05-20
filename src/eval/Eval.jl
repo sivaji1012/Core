@@ -75,6 +75,9 @@ function eval_metta(expr::Any, space::CoreSpace = default_space()) :: Any
     head === Symbol("remove-atom") && return _eval_remove_atom(args, space)
     head === Symbol("get-atoms")   && return core_atoms(space)
     head === Symbol("new-space")   && return new_core_space()
+    # WILLIAM space-aware primitives (session 3c — Core wiring)
+    head === Symbol("william-heavy-hitters") && return _eval_william_heavy_hitters(args, space)
+    head === Symbol("william-threshold")     && return _eval_william_threshold(args, space)
     head === Symbol("get-type-space") && return _eval_get_type_space(args, space)
     head === Symbol("add-reduct")     && return _eval_add_reduct(args, space)
     head === Symbol("for-each-in-atom") && return _eval_for_each(args, space)
@@ -430,6 +433,27 @@ function _var_name(var::Any) :: Union{Symbol, Nothing}
     startswith(s, "\$")      && return Symbol(s[2:end])
     startswith(s, "__var_")  && return Symbol("\$" * s[7:end])
     nothing
+end
+
+# ── WILLIAM space-aware special forms ────────────────────────────────────────
+
+function _eval_william_heavy_hitters(args::Vector, space::CoreSpace)
+    # Resolve first arg: &self or explicit space → use current space
+    s = length(args) >= 1 && eval_metta(args[1], space) === Symbol("&self") ? space :
+        length(args) >= 1 && eval_metta(args[1], space) isa CoreSpace ?
+            eval_metta(args[1], space) : space
+    min_gain = length(args) >= 2 ?
+        Float64(something(tryparse(Float64, string(eval_metta(args[2], space))), 0.7)) : 0.7
+    k = length(args) >= 3 ?
+        Int(round(Float64(something(tryparse(Float64, string(eval_metta(args[3], space))), 20.0)))) : 20
+    _william_heavy_hitters(s, min_gain, k)
+end
+
+function _eval_william_threshold(args::Vector, space::CoreSpace)
+    s = length(args) >= 1 && eval_metta(args[1], space) === Symbol("&self") ? space :
+        length(args) >= 1 && eval_metta(args[1], space) isa CoreSpace ?
+            eval_metta(args[1], space) : space
+    _william_threshold(s)
 end
 
 export eval_metta, run_metta, run_file, default_space
