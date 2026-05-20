@@ -92,13 +92,32 @@ function register_all_primitives!(eval_fn::Union{Function,Nothing} = nothing)
     )
 end
 
+"""
+    register_for_space!(space::CoreSpace)
+
+Register all primitives with `foldl-atom`/`map-atom`/`filter-atom` wired
+to evaluate sub-expressions in `space`.  This is the correct setup when
+rules like `WILLIAM.size` (which use `foldl-atom` recursively) are loaded
+into `space`.
+
+Usage (replaces the manual eval_fn pattern):
+    s = new_core_space()
+    register_for_space!(s)
+    load_stdlib!(s)
+    run_metta("!(import! &self (library lib_william))", s)
+"""
+function register_for_space!(space::CoreSpace)
+    register_core_primitives!()
+    _register_atom_ops!(expr_str -> to_sexpr(eval_metta(from_sexpr(expr_str), space)))
+end
+
 export CoreSpace, new_core_space
 export core_add!, core_remove!, core_match, core_rules, core_atoms
 export core_calculus!, core_calculus_at!
 export to_sexpr, from_sexpr, to_sexpr_query, _tokenise
 export parse_metta, parse_sexpr
 export eval_metta, run_metta, run_file, default_space
-export register_core_primitives!, register_all_primitives!, load_stdlib!
+export register_core_primitives!, register_all_primitives!, register_for_space!, load_stdlib!
 export register_grounded!, is_grounded, GROUNDED_REGISTRY
 
 end # module MeTTaCore

@@ -134,15 +134,14 @@
 ;;; ===========================================================================
 ;;; §4 — Least-General Generalization (AUSink) — W5  [WP §5.12]
 ;;; ===========================================================================
-;;; Uses MORK AUSink via exec atoms. LGG is the core of anti-unification:
-;;; the most-specific pattern that subsumes both $a and $b.
-
+;;; AUSink fires via MORK exec calculus and writes results as side effects.
+;;; We use a unique result marker (WILLIAM.lgg-result $a $b) to retrieve the
+;;; output after the exec atom fires.
+;;;
+;;; WILLIAM.lgg is grounded in Julia via MORK._au_merge! — registered by
+;;; register_core_primitives!(). No exec atom needed; this type annotation
+;;; documents the signature for type-checking tools.
 (: WILLIAM.lgg (-> Atom Atom Atom))
-(= (WILLIAM.lgg $a $b)
-   (let $out (collapse
-               (exec 0 (, (= $a $x) (= $b $x))
-                       (O (AU $x))))
-     (if (== $out ()) Empty (car-atom $out))))
 
 ;;; Normalised Compression Distance proxy via LGG.  [Franz 2019 §3]
 ;;; NCD(a,b) ≈ (size(lgg(a,b)) - min(size(a),size(b))) / max(size(a),size(b))

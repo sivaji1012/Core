@@ -54,6 +54,14 @@ function _register_string_ops!()
         println(join(args, " "))
         "()"
     end)
+    # trace! <label> <expr> — print label, return expr (pass-through debug)
+    # Per MeTTa stdlib: !(trace! "label" expr) → prints "label", returns expr
+    MORK.register_grounded!("trace!", args -> begin
+        label = length(args) >= 1 ? args[1] : ""
+        val   = length(args) >= 2 ? args[2] : "()"
+        println("[trace] ", label, " = ", val)
+        val   # pass the value through
+    end)
 end
 
 # ── Type checks ───────────────────────────────────────────────────────────────
@@ -408,6 +416,25 @@ function _register_random_ops!()
     end)
 end
 
+# ── WILLIAM algorithm primitives ─────────────────────────────────────────────
+# WILLIAM.lgg — Least-General Generalization via MORK's _au_merge! directly.
+# Bypasses the exec/AUSink path (which needs an accumulating-sink fix) and
+# calls the anti-unification algorithm directly on MORK byte arrays.
+# Both arguments arrive as S-expression strings; result is serialised back.
+
+function _register_william_primitives!()
+    MORK.register_grounded!("WILLIAM.lgg", args -> begin
+        length(args) < 2 && return "\$"
+        a_str = args[1]; b_str = args[2]
+        a_expr = try MORK.sexpr_to_expr(a_str) catch; return "\$" end
+        b_expr = try MORK.sexpr_to_expr(b_str) catch; return "\$" end
+        out = sizehint!(Vector{UInt8}(), max(length(a_expr.buf), length(b_expr.buf), 16))
+        st  = MORK._AuState()
+        MORK._au_merge!(a_expr.buf, 1, b_expr.buf, 1, out, st)
+        try MORK.expr_serialize(out) catch; "\$" end
+    end)
+end
+
 # ── Registration entry point ──────────────────────────────────────────────────
 
 """Register all built-in grounded primitives into MORK.GROUNDED_REGISTRY."""
@@ -427,6 +454,7 @@ function register_core_primitives!()
     _register_format_ops!()
     _register_ndet_set_ops!()
     _register_random_ops!()
+    _register_william_primitives!()
 end
 
 export register_core_primitives!
