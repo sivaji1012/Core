@@ -74,6 +74,8 @@ function eval_metta(expr::Any, space::CoreSpace = default_space()) :: Any
     head === Symbol("bind!")        && return _eval_bind!(args, space)
     head === Symbol("add-atom")    && return _eval_add_atom(args, space)
     head === Symbol("remove-atom") && return _eval_remove_atom(args, space)
+    # exec atoms — add to MORK space and run calculus (AUSink/CountSink/HeadSink)
+    head === :exec                  && return _eval_exec_atom(expr, space)
     head === Symbol("get-atoms")   && return core_atoms(space)
     head === Symbol("new-space")   && return new_core_space()
     head === Symbol("get-type-space") && return _eval_get_type_space(args, space)
@@ -197,6 +199,16 @@ function _eval_superpose(args::Vector, space::CoreSpace)
     isempty(args) && return nothing
     items = args[1] isa Vector ? args[1] : [args[1]]
     [eval_metta(item, space) for item in items]
+end
+
+function _eval_exec_atom(expr::Vector, space::CoreSpace)
+    # exec atoms use MORK's MM2 calculus (AUSink/CountSink/HeadSink).
+    # Add the exec atom to the MORK space and run space_metta_calculus!
+    # for a bounded number of steps.  Results are written back to the space
+    # as side effects — callers inspect the space for results.
+    core_add!(space, expr)
+    core_calculus!(space, 10_000)
+    nothing
 end
 
 function _eval_add_atom(args::Vector, space::CoreSpace)

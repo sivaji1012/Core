@@ -91,10 +91,17 @@
 ;;; iter_any_topk: globally significant patterns ranked by MDL gain.
 ;;; Returns top-$k (Pair gain pattern) from candidates.
 ;;;
+;;; iter_any_topk over a caller-supplied candidate list (avoids full space scan).
+;;; For a bounded-cost query pass only candidate patterns, not all atoms.
+;;;
 (: WILLIAM.iter-any-topk (-> Atom Number List))
 (= (WILLIAM.iter-any-topk $space $k)
-   (let $atoms (collapse (match $space $x $x))
+   (let $atoms (collapse (match $space (WILLIAM.Entry $pat $_ $_) $pat))
      (WILLIAM.topk-by-gain $space $atoms $k)))
+
+;;; Variant: score an explicit candidate list — caller controls scope.
+(= (WILLIAM.iter-topk-candidates $space $candidates $k)
+   (WILLIAM.topk-by-gain $space $candidates $k))
 
 ;;; iter_prefix_topk: patterns under $prefix ranked by MDL gain.  [WP §5.12]
 ;;; Scopes heavy-hitter search to a sub-space prefix.
