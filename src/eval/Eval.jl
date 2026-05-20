@@ -69,8 +69,9 @@ function eval_metta(expr::Any, space::CoreSpace = default_space()) :: Any
     head === :noeval               && return isempty(args) ? nothing : args[1]  # return unevaluated
     head === :do          && return _eval_do(args, space)
     head === :begin       && return _eval_do(args, space)
-    head === Symbol("import!")   && return _eval_import!(args, space)
-    head === Symbol("bind!")     && return _eval_bind!(args, space)
+    head === Symbol("import!")      && return _eval_import!(args, space)
+    head === Symbol("git-import!")  && return _eval_git_import!(args, space)
+    head === Symbol("bind!")        && return _eval_bind!(args, space)
     head === Symbol("add-atom")    && return _eval_add_atom(args, space)
     head === Symbol("remove-atom") && return _eval_remove_atom(args, space)
     head === Symbol("get-atoms")   && return core_atoms(space)
@@ -377,14 +378,98 @@ function _eval_do(args::Vector, space::CoreSpace)
     result
 end
 
+# ── Package registry — maps package name → local path  ───────────────────────
+# Populated by git-import!. Mirrors PeTTa's package cache (~/.metta/packages/).
+const _PACKAGE_REGISTRY = Dict{String, String}()
+const _METTA_PACKAGES_DIR = joinpath(homedir(), ".metta", "packages")
+
+"""Return the local path for a `(library pkg file)` import expression, or nothing."""
+function _resolve_library(expr) :: Union{String, Nothing}
+    # (library pkg file) → ~/.metta/packages/pkg/file.metta
+    # (library file)     → ~/.metta/packages/file/file.metta  OR  ~/.metta/lib/file.metta
+    if expr isa Vector && !isempty(expr) && expr[1] === Symbol("library")
+        parts = expr[2:end]
+        if length(parts) == 2
+            pkg  = string(parts[1])
+            file = string(parts[2])
+            # 1. Registered via git-import!
+            if haskey(_PACKAGE_REGISTRY, pkg)
+                p = joinpath(_PACKAGE_REGISTRY[pkg], file * ".metta")
+                isfile(p) && return p
+            end
+            # 2. ~/.metta/packages/pkg/file.metta
+            p = joinpath(_METTA_PACKAGES_DIR, pkg, file * ".metta")
+            isfile(p) && return p
+        elseif length(parts) == 1
+            name = string(parts[1])
+            # 1. Registered package
+            if haskey(_PACKAGE_REGISTRY, name)
+                p = joinpath(_PACKAGE_REGISTRY[name], name * ".metta")
+                isfile(p) && return p
+            end
+            # 2. ~/.metta/packages/name/name.metta
+            p = joinpath(_METTA_PACKAGES_DIR, name, name * ".metta")
+            isfile(p) && return p
+            # 3. ~/.metta/lib/name.metta  (PeTTa-compatible flat lib dir)
+            p = joinpath(homedir(), ".metta", "lib", name * ".metta")
+            isfile(p) && return p
+        end
+    end
+    nothing
+end
+
 function _eval_import!(args::Vector, space::CoreSpace)
-    # (import! &self "path/to/file.metta") — load file into space
+    # (import! &self "path/to/file.metta")        — file path
+    # (import! &self (library pkg lib_name))       — package + file (git-import! style)
+    # (import! &self (library lib_name))           — shorthand
     length(args) < 2 && return nothing
     path_arg = args[2]
+
+    # Try library resolution first
+    lib_path = _resolve_library(path_arg)
+    if lib_path !== nothing
+        run_file(lib_path, space)
+        return path_arg
+    end
+
+    # Fall back to plain file path
     path = path_arg isa String ? path_arg : string(path_arg)
     isfile(path) || return [:Error, [:import!, path_arg], Symbol("FileNotFound")]
     run_file(path, space)
     path_arg
+end
+
+function _eval_git_import!(args::Vector, space::CoreSpace)
+    # (git-import! "https://github.com/user/repo.git")
+    # (git-import! "https://github.com/user/repo.git" "build.sh")
+    # Clones/updates repo to ~/.metta/packages/<repo-name>/
+    # Registers the path so (library ...) can find it.
+    length(args) < 1 && return nothing
+    url_arg = args[1]
+    url = url_arg isa String ? url_arg : string(url_arg)
+
+    # Derive repo name from URL  (last path segment, strip .git)
+    repo_name = replace(split(url, "/")[end], r"\.git$" => "")
+    dest = joinpath(_METTA_PACKAGES_DIR, repo_name)
+
+    mkpath(_METTA_PACKAGES_DIR)
+
+    if isdir(joinpath(dest, ".git"))
+        run(`git -C $dest pull --quiet`, wait=true)
+    else
+        run(`git clone --quiet $url $dest`, wait=true)
+    end
+
+    # Run optional build script
+    if length(args) >= 2
+        build = string(args[2])
+        build_path = joinpath(dest, build)
+        isfile(build_path) && run(`bash $build_path`, wait=true)
+    end
+
+    _PACKAGE_REGISTRY[repo_name] = dest
+    @info "git-import!: $repo_name → $dest"
+    repo_name
 end
 
 function _eval_get_type_space(args::Vector, space::CoreSpace)
