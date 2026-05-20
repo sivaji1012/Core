@@ -382,6 +382,8 @@ end
 # Populated by git-import!. Mirrors PeTTa's package cache (~/.metta/packages/).
 const _PACKAGE_REGISTRY = Dict{String, String}()
 const _METTA_PACKAGES_DIR = joinpath(homedir(), ".metta", "packages")
+# Core/lib/ — algorithm libraries, mirrors PeTTa/lib/
+const _CORE_LIB_DIR = joinpath(@__DIR__, "..", "..", "lib")
 
 """Return the local path for a `(library pkg file)` import expression, or nothing."""
 function _resolve_library(expr) :: Union{String, Nothing}
@@ -392,25 +394,31 @@ function _resolve_library(expr) :: Union{String, Nothing}
         if length(parts) == 2
             pkg  = string(parts[1])
             file = string(parts[2])
-            # 1. Registered via git-import!
+            # 1. Core/lib/file.metta  (canonical local lib, mirrors PeTTa/lib/)
+            p = joinpath(_CORE_LIB_DIR, file * ".metta")
+            isfile(p) && return p
+            # 2. Registered via git-import!
             if haskey(_PACKAGE_REGISTRY, pkg)
                 p = joinpath(_PACKAGE_REGISTRY[pkg], file * ".metta")
                 isfile(p) && return p
             end
-            # 2. ~/.metta/packages/pkg/file.metta
+            # 3. ~/.metta/packages/pkg/file.metta
             p = joinpath(_METTA_PACKAGES_DIR, pkg, file * ".metta")
             isfile(p) && return p
         elseif length(parts) == 1
             name = string(parts[1])
-            # 1. Registered package
+            # 1. Core/lib/name.metta
+            p = joinpath(_CORE_LIB_DIR, name * ".metta")
+            isfile(p) && return p
+            # 2. Registered package
             if haskey(_PACKAGE_REGISTRY, name)
                 p = joinpath(_PACKAGE_REGISTRY[name], name * ".metta")
                 isfile(p) && return p
             end
-            # 2. ~/.metta/packages/name/name.metta
+            # 3. ~/.metta/packages/name/name.metta
             p = joinpath(_METTA_PACKAGES_DIR, name, name * ".metta")
             isfile(p) && return p
-            # 3. ~/.metta/lib/name.metta  (PeTTa-compatible flat lib dir)
+            # 4. ~/.metta/lib/name.metta  (PeTTa-compatible flat lib dir)
             p = joinpath(homedir(), ".metta", "lib", name * ".metta")
             isfile(p) && return p
         end
@@ -450,9 +458,9 @@ function _eval_git_import!(args::Vector, space::CoreSpace)
 
     # Derive repo name from URL  (last path segment, strip .git)
     repo_name = replace(split(url, "/")[end], r"\.git$" => "")
-    dest = joinpath(_METTA_PACKAGES_DIR, repo_name)
-
-    mkpath(_METTA_PACKAGES_DIR)
+    # Primary: clone into Core/lib/<repo-name>/  (mirrors PeTTa/lib/ layout)
+    dest = joinpath(_CORE_LIB_DIR, repo_name)
+    mkpath(dirname(dest))
 
     if isdir(joinpath(dest, ".git"))
         run(`git -C $dest pull --quiet`, wait=true)
