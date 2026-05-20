@@ -132,10 +132,21 @@ end
     run_file(path, space=default_space()) → Vector{Any}
 
 Load and evaluate a .metta file. Atoms are added to space; `!` forms are executed.
+
+Relative `import!` paths inside the file are resolved relative to the file's
+own directory — matching PeTTa's behaviour.  The working directory is restored
+after the file finishes loading.
 """
 function run_file(path::String, space::CoreSpace = default_space()) :: Vector{Any}
     isfile(path) || error("File not found: $path")
-    run_metta(read(path, String), space)
+    abs_path = abspath(path)
+    prev_dir = pwd()
+    try
+        cd(dirname(abs_path))
+        run_metta(read(abs_path, String), space)
+    finally
+        cd(prev_dir)
+    end
 end
 
 # ── Special form implementations ──────────────────────────────────────────────
