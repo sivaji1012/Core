@@ -581,8 +581,12 @@ function _eval_with_space(args::Vector, space::CoreSpace)
     #     (WILLIAM.Learn &scratch (test-atom)))
     length(args) < 3 && return nothing
     name     = args[1]                           # e.g. Symbol("&scratch")
-    init_val = eval_metta(args[2], space)        # evaluate (new-space) etc.
+    init_val = eval_metta(args[2], space)        # evaluated ONCE at entry
     init_val isa CoreSpace || return nothing
+    # Save-and-restore: if &name was already bound (shadowing or nesting),
+    # restore it on exit rather than unconditionally deleting.
+    # Handles: (with-space &s ... (with-space &s ...)) — inner exit restores outer.
+    prior = name isa Symbol ? get(space.named_spaces, name, nothing) : nothing
     name isa Symbol && (space.named_spaces[name] = init_val)
     result = nothing
     try
@@ -590,7 +594,13 @@ function _eval_with_space(args::Vector, space::CoreSpace)
             result = eval_metta(body_expr, space)
         end
     finally
-        name isa Symbol && delete!(space.named_spaces, name)   # release root
+        if name isa Symbol
+            if prior === nothing
+                delete!(space.named_spaces, name)   # wasn't bound before — release
+            else
+                space.named_spaces[name] = prior    # was bound — restore prior
+            end
+        end
     end
     result
 end
