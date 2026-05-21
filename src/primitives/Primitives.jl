@@ -422,6 +422,34 @@ end
 # calls the anti-unification algorithm directly on MORK byte arrays.
 # Both arguments arrive as S-expression strings; result is serialised back.
 
+function _register_metamo_primitives!()
+    # MetaMo.blend-vec: implements equation #9 component-wise blend.
+    # args = [alpha_str, current_vec_str, target_vec_str]
+    # current/target are (G g1 g2 ...) or (M m1 m2 ...) atoms — tag preserved.
+    # Returns a new atom of same type with blended numeric values.
+    MORK.register_grounded!("MetaMo.blend-vec", args -> begin
+        length(args) < 3 && return args[1]
+        alpha = tryparse(Float64, args[1])
+        alpha === nothing && return args[2]   # fallback: return current unchanged
+        cur_s = strip(args[2]); tgt_s = strip(args[3])
+        # Parse tagged vectors: (G 0.8 0.3) → tag="G", vals=[0.8, 0.3]
+        if !startswith(cur_s, "(") || !startswith(tgt_s, "(")
+            return args[2]
+        end
+        cur_toks = MeTTaCore._tokenise(cur_s[2:prevind(cur_s, lastindex(cur_s))])
+        tgt_toks = MeTTaCore._tokenise(tgt_s[2:prevind(tgt_s, lastindex(tgt_s))])
+        isempty(cur_toks) || isempty(tgt_toks) && return args[2]
+        tag = cur_toks[1]   # preserve the G or M tag
+        cur_nums = tryparse.(Float64, cur_toks[2:end])
+        tgt_nums = tryparse.(Float64, tgt_toks[2:end])
+        any(isnothing, cur_nums) || any(isnothing, tgt_nums) && return args[2]
+        length(cur_nums) != length(tgt_nums) && return args[2]
+        blended = [(1-alpha) * c + alpha * t
+                   for (c, t) in zip(cur_nums, tgt_nums)]
+        "($tag $(join(round.(blended, digits=6), " ")))"
+    end)
+end
+
 function _register_william_primitives!()
     MORK.register_grounded!("WILLIAM.lgg", args -> begin
         length(args) < 2 && return "\$"
@@ -455,6 +483,7 @@ function register_core_primitives!()
     _register_ndet_set_ops!()
     _register_random_ops!()
     _register_william_primitives!()
+    _register_metamo_primitives!()
 end
 
 export register_core_primitives!

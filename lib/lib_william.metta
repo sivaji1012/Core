@@ -72,9 +72,11 @@
 ;;; Uses MORK CountSink via exec atoms for O(log n) trie-accelerated counting.
 
 ;;; Count unique atoms in $space matching $pattern.
+;;; Scalar template 'yes' avoids single-match ambiguity: collapse(match) with
+;;; 1 match returns the atom directly; scalar forces [yes] wrapping via collapse.
 (: WILLIAM.count (-> Atom Atom Number))
 (= (WILLIAM.count $space $pattern)
-   (let $result (collapse (match $space $pattern $pattern))
+   (let $result (collapse (match $space $pattern yes))
      (size-atom $result)))
 
 ;;; Support = normalised frequency (count / total atoms in space).
@@ -177,8 +179,7 @@
      (if (== $result ()) NotFound (car-atom $result))))
 
 (= (WILLIAM.dict-size $space)
-   (size-atom (collapse (match $space (WILLIAM.Entry $ep $es $eg)
-                           (WILLIAM.Entry $ep $es $eg)))))
+   (size-atom (collapse (match $space (WILLIAM.Entry $ep $es $eg) yes))))
 
 (= (WILLIAM.dict-update! $space $pattern $new-support $new-gain)
    (let $old (collapse (match $space (WILLIAM.Entry $pattern $es $eg) (WILLIAM.Entry $pattern $es $eg)))
