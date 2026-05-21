@@ -21,7 +21,7 @@ end
 Evaluate a MeTTa expression (Julia value) against a CoreSpace.
 Returns the reduced result or the expression itself if no rule fires.
 """
-function eval_metta(expr::Any, space::CoreSpace = default_space()) :: Any
+function eval_metta(@nospecialize(expr), space::CoreSpace = default_space()) :: Any
     # Variable — return as-is (bindings handled by caller)
     expr isa Symbol && startswith(string(expr), "\$") && return expr
 
@@ -67,6 +67,9 @@ function eval_metta(expr::Any, space::CoreSpace = default_space()) :: Any
     head === :empty       && return nothing
     head === Symbol("noreduce-eq") && return _eval_noreduce_eq(args)  # no eval of args
     head === :noeval               && return isempty(args) ? nothing : args[1]  # return unevaluated
+    # Error is a constructor — args are NOT evaluated (prevents assertEqual infinite recursion)
+    head === :Error                && return vcat([Symbol("Error")], args)
+    head === Symbol("Error")       && return vcat([Symbol("Error")], args)
     head === :do          && return _eval_do(args, space)
     head === :begin       && return _eval_do(args, space)
     head === Symbol("import!")      && return _eval_import!(args, space)
@@ -81,6 +84,10 @@ function eval_metta(expr::Any, space::CoreSpace = default_space()) :: Any
     head === Symbol("get-type-space") && return _eval_get_type_space(args, space)
     head === Symbol("add-reduct")     && return _eval_add_reduct(args, space)
     head === Symbol("for-each-in-atom") && return _eval_for_each(args, space)
+    # Higher-order atom ops — body arg must NOT be pre-evaluated (special forms)
+    head === Symbol("foldl-atom")   && return _eval_foldl_atom(args, space)
+    head === Symbol("map-atom")     && return _eval_map_atom(args, space)
+    head === Symbol("filter-atom")  && return _eval_filter_atom(args, space)
 
     # ── Grounded dispatch ─────────────────────────────────────────────────────
     if head isa Symbol && is_grounded(string(head))
@@ -161,12 +168,15 @@ function _eval_match(args::Vector, space::CoreSpace)
     template = length(args) >= 3 ? args[3] : pattern
     # Resolve space reference
     s = sp_arg === Symbol("&self") ? space : space
+    s = _resolve_space(sp_arg, space)
     candidates = core_match(s, pattern)
     results = Any[]
     for cand in candidates
         b = _unify(pattern, cand)
         b === nothing && continue
-        push!(results, eval_metta(_apply_bindings(template, b), space))
+        # MeTTa spec: match returns the substituted template as DATA, not evaluated.
+        # Evaluating the template would execute rule atoms matched by wildcards.
+        push!(results, _apply_bindings(template, b))
     end
     isempty(results) ? [] : (length(results) == 1 ? results[1] : results)
 end
@@ -213,25 +223,29 @@ end
 
 function _eval_add_atom(args::Vector, space::CoreSpace)
     length(args) < 2 && return nothing
-    core_add!(space, args[2])
-    args[2]
+    sp = _resolve_space(args[1], space)
+    atom = eval_metta(args[2], sp)
+    core_add!(sp, atom)
+    atom
 end
 
 function _eval_remove_atom(args::Vector, space::CoreSpace)
     length(args) < 2 && return nothing
-    core_remove!(space, args[2])
-    args[2]
+    sp = _resolve_space(args[1], space)
+    atom = eval_metta(args[2], sp)
+    core_remove!(sp, atom)
+    atom
 end
 
 # ── Unification helpers ───────────────────────────────────────────────────────
 
 """Unify two expressions, returning bindings Dict or nothing on failure."""
-function _unify(pattern::Any, value::Any) :: Union{Dict{Symbol,Any}, Nothing}
+function _unify(@nospecialize(pattern), @nospecialize(value)) :: Union{Dict{Symbol,Any}, Nothing}
     bindings = Dict{Symbol, Any}()
     _unify!(pattern, value, bindings) ? bindings : nothing
 end
 
-function _unify!(pat::Any, val::Any, b::Dict{Symbol,Any}) :: Bool
+function _unify!(@nospecialize(pat), @nospecialize(val), b::Dict{Symbol,Any}) :: Bool
     # Handle both $x and __var_x forms for variables
     pat_str = pat isa Symbol ? string(pat) : ""
     is_var  = startswith(pat_str, "\$") || startswith(pat_str, "__var_")
@@ -257,7 +271,7 @@ function _unify_args(params::Vector, args::Vector) :: Union{Dict{Symbol,Any}, No
 end
 
 """Apply variable bindings to an expression."""
-function _apply_bindings(expr::Any, b::Dict{Symbol,Any}) :: Any
+function _apply_bindings(@nospecialize(expr), b::Dict{Symbol,Any}) :: Any
     isempty(b) && return expr
     if expr isa Symbol
         s = string(expr)
@@ -284,8 +298,14 @@ function _eval_let_star(args::Vector, space::CoreSpace)
         pair isa Vector && length(pair) >= 2 || continue
         var  = pair[1]
         val  = eval_metta(_apply_bindings(pair[2], b), space)
-        vname = _var_name(var)
-        vname !== nothing && (b[vname] = val)
+        if var isa Vector && !isempty(var)
+            # Compound pattern: ((Constructor $x $y) val) — unify and merge bindings
+            bindings = _unify(_apply_bindings(var, b), val)
+            bindings !== nothing && merge!(b, bindings)
+        else
+            vname = _var_name(var)
+            vname !== nothing && (b[vname] = val)
+        end
     end
     eval_metta(_apply_bindings(body, b), space)
 end
@@ -529,12 +549,27 @@ function _eval_noreduce_eq(args::Vector)
     to_sexpr(args[1]) == to_sexpr(args[2]) ? :True : :False
 end
 
+# Module-level space registry — CoreSpace objects can't round-trip through MORK,
+# so named spaces (bind! &name (new-space)) are stored here directly.
+const _NAMED_SPACES = Dict{Symbol, CoreSpace}()
+
+function _resolve_space(sp_arg::Any, default::CoreSpace) :: CoreSpace
+    sp_arg === Symbol("&self") && return default
+    sp_arg isa Symbol && haskey(_NAMED_SPACES, sp_arg) && return _NAMED_SPACES[sp_arg]
+    resolved = try eval_metta(sp_arg, default) catch; nothing end
+    resolved isa CoreSpace ? resolved : default
+end
+
 function _eval_bind!(args::Vector, space::CoreSpace)
-    # (bind! name expr) — add (= name result) to space
+    # (bind! name expr) — binds name to result; CoreSpaces go into _NAMED_SPACES
     length(args) < 2 && return nothing
     name = args[1]
     val  = eval_metta(args[2], space)
-    core_add!(space, [:(=), name, val])
+    if val isa CoreSpace && name isa Symbol
+        _NAMED_SPACES[name] = val
+    else
+        core_add!(space, [:(=), name, val])
+    end
     val
 end
 
@@ -546,6 +581,87 @@ function _var_name(var::Any) :: Union{Symbol, Nothing}
     startswith(s, "\$")      && return Symbol(s[2:end])
     startswith(s, "__var_")  && return Symbol("\$" * s[7:end])
     nothing
+end
+
+# ── Higher-order special forms (body must NOT be pre-evaluated) ───────────────
+# foldl-atom, map-atom, filter-atom receive the body as a raw unevaluated
+# expression. We substitute the accumulator/element variables manually and
+# call eval_metta on each substituted body — no string round-trip needed.
+
+function _eval_foldl_atom(args::Vector, space::CoreSpace)
+    # (foldl-atom $list $init $acc $elem $body)
+    length(args) < 5 && return args[2]  # return init on bad arity
+    list_val = eval_metta(args[1], space)
+    acc      = eval_metta(args[2], space)
+    acc_var  = args[3]   # NOT evaluated — variable name
+    elem_var = args[4]   # NOT evaluated — variable name
+    body     = args[5]   # NOT evaluated — template
+
+    acc_name  = _var_name(acc_var)
+    elem_name = _var_name(elem_var)
+
+    items = list_val isa Vector ? list_val :
+            list_val isa String ? begin
+                p = from_sexpr(list_val)
+                p isa Vector ? p : (p === nothing ? [] : [p])
+            end : [list_val]
+
+    for item in items
+        b = Dict{Symbol,Any}()
+        acc_name  !== nothing && (b[acc_name]  = acc)
+        elem_name !== nothing && (b[elem_name] = item)
+        acc = eval_metta(_apply_bindings(body, b), space)
+    end
+    acc
+end
+
+function _eval_map_atom(args::Vector, space::CoreSpace)
+    # (map-atom $list $var $body)
+    length(args) < 3 && return []
+    list_val = eval_metta(args[1], space)
+    elem_var = args[2]   # NOT evaluated
+    body     = args[3]   # NOT evaluated
+
+    elem_name = _var_name(elem_var)
+
+    items = list_val isa Vector ? list_val :
+            list_val isa String ? begin
+                p = from_sexpr(list_val)
+                p isa Vector ? p : (p === nothing ? [] : [p])
+            end : [list_val]
+
+    results = Any[]
+    for item in items
+        b = Dict{Symbol,Any}()
+        elem_name !== nothing && (b[elem_name] = item)
+        push!(results, eval_metta(_apply_bindings(body, b), space))
+    end
+    results
+end
+
+function _eval_filter_atom(args::Vector, space::CoreSpace)
+    # (filter-atom $list $var $pred)
+    length(args) < 3 && return []
+    list_val = eval_metta(args[1], space)
+    elem_var = args[2]   # NOT evaluated
+    pred     = args[3]   # NOT evaluated
+
+    elem_name = _var_name(elem_var)
+
+    items = list_val isa Vector ? list_val :
+            list_val isa String ? begin
+                p = from_sexpr(list_val)
+                p isa Vector ? p : (p === nothing ? [] : [p])
+            end : [list_val]
+
+    kept = Any[]
+    for item in items
+        b = Dict{Symbol,Any}()
+        elem_name !== nothing && (b[elem_name] = item)
+        r = eval_metta(_apply_bindings(pred, b), space)
+        (r === true || r === :True || r == "True") && push!(kept, item)
+    end
+    kept
 end
 
 export eval_metta, run_metta, run_file, default_space

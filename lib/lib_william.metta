@@ -77,10 +77,11 @@
    (let $result (collapse (match $space $pattern $pattern))
      (size-atom $result)))
 
-;;; Support = normalised frequency (count / total atoms).
+;;; Support = normalised frequency (count / total atoms in space).
+;;; Uses WILLIAM.count for the denominator to avoid scanning all atoms.
 (= (WILLIAM.support $space $pattern)
    (let* (($n     (WILLIAM.count $space $pattern))
-          ($total (size-atom (collapse (match $space $_ $_)))))
+          ($total (WILLIAM.count $space $anything)))
      (if (== $total 0) 0
        (/ $n $total))))
 
@@ -96,7 +97,7 @@
 ;;;
 (: WILLIAM.iter-any-topk (-> Atom Number List))
 (= (WILLIAM.iter-any-topk $space $k)
-   (let $atoms (collapse (match $space (WILLIAM.Entry $pat $_ $_) $pat))
+   (let $atoms (collapse (match $space (WILLIAM.Entry $pat $es $eg) $pat))
      (WILLIAM.topk-by-gain $space $atoms $k)))
 
 ;;; Variant: score an explicit candidate list — caller controls scope.
@@ -171,17 +172,18 @@
    (add-atom $space (WILLIAM.Entry $pattern $support $gain)))
 
 (= (WILLIAM.dict-lookup $space $pattern)
-   (let $result (collapse (match $space (WILLIAM.Entry $pattern $_ $_)
-                             (WILLIAM.Entry $pattern $_ $_)))
+   (let $result (collapse (match $space (WILLIAM.Entry $pattern $es $eg)
+                             (WILLIAM.Entry $pattern $es $eg)))
      (if (== $result ()) NotFound (car-atom $result))))
 
 (= (WILLIAM.dict-size $space)
-   (size-atom (collapse (match $space (WILLIAM.Entry $_ $_ $_)
-                           (WILLIAM.Entry $_ $_ $_)))))
+   (size-atom (collapse (match $space (WILLIAM.Entry $ep $es $eg)
+                           (WILLIAM.Entry $ep $es $eg)))))
 
 (= (WILLIAM.dict-update! $space $pattern $new-support $new-gain)
-   (let $_ (remove-atom $space (WILLIAM.Entry $pattern $_ $_))
-     (WILLIAM.dict-add! $space $pattern $new-support $new-gain)))
+   (let $old (collapse (match $space (WILLIAM.Entry $pattern $es $eg) (WILLIAM.Entry $pattern $es $eg)))
+     (let $_ (if (not (== $old ())) (remove-atom $space (car-atom $old)) ())
+       (WILLIAM.dict-add! $space $pattern $new-support $new-gain))))
 
 ;;; ===========================================================================
 ;;; §6 — Learn Loop — W3  [Franz 2019 §2, OBSERVE/PARSE/ENCODE/LEARN]
@@ -195,23 +197,19 @@
 (: WILLIAM.Learn (-> Atom Atom Atom))
 (= (WILLIAM.Learn $space $data)
    (let* (
-     ; 1. OBSERVE — add data to space
+     ; 1. OBSERVE — add data atom to space
      ($_ (add-atom $space $data))
-     ; 2. PARSE — find existing patterns that subsume $data
-     ($matches (collapse (match $space (WILLIAM.Entry $pat $_ $_)
-                           (if (== (WILLIAM.ncd $data $pat) 0) $pat Empty))))
-     ; 3. ENCODE — estimate residual size (data size minus best match)
-     ($best-match (if (== $matches ()) Empty (car-atom $matches)))
-     ($residual-size (if (== $best-match Empty)
-                         (WILLIAM.size $data)
-                         (- (WILLIAM.size $data)
-                            (WILLIAM.size $best-match))))
-     ; 4. LEARN — if residual gain is significant, mine new patterns
-     ($new-patterns (if (> $residual-size (WILLIAM.Config.Threshold))
-                        (WILLIAM.iter-any-topk $space (WILLIAM.Config.TopK))
-                        ()))
+     ; 2. DIRECT — compute gain of this data atom and add to dict if significant
+     ;    (bootstraps the dict on first pass without needing existing entries)
+     ($count (WILLIAM.count $space $data))
+     ($gain  (WILLIAM.gain $data $count))
+     ($_ (if (> $gain (WILLIAM.Config.Threshold))
+             (WILLIAM.dict-add! $space $data $count $gain)
+             ()))
+     ; 3. MINE — find existing high-gain patterns from the dict
+     ($new-patterns (WILLIAM.iter-any-topk $space (WILLIAM.Config.TopK)))
    )
-   ; Add high-gain patterns to dictionary
+   ; Update gain for any discovered patterns
    (map-atom $new-patterns $entry
      (let* (((Pair $g $pat) $entry)
             ($s (WILLIAM.count $space $pat)))
@@ -232,14 +230,14 @@
                      (Pair $gain ($prefix $continuation))))
      (if (== $candidates ())
          ; No match — return LGG of all patterns starting with prefix
-         (let $all-under (collapse (match $space (WILLIAM.Entry ($prefix $_) $_ $_)
-                                     ($prefix $_)))
+         (let $all-under (collapse (match $space (WILLIAM.Entry ($prefix $cont) $es $eg)
+                                     ($prefix $cont)))
            (if (== $all-under ()) Empty
              (foldl-atom (cdr-atom $all-under) (car-atom $all-under)
                $acc $next (WILLIAM.lgg $acc $next))))
          ; Return highest-gain candidate
          (let $sorted (WILLIAM.sort-desc $candidates)
-           (let (Pair $_ $prediction) (car-atom $sorted)
+           (let (Pair $pg $prediction) (car-atom $sorted)
              $prediction)))))
 
 ;;; ===========================================================================

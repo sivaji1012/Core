@@ -71,6 +71,32 @@ function _register_atom_ops!(eval_fn::Function)
         end
     end)
 
+    MORK.register_grounded!("take-atom", args -> begin
+        length(args) < 2 && return "()"
+        list_s = strip(args[1])
+        n = tryparse(Int, args[2])
+        n === nothing && return list_s
+        if startswith(list_s, "(") && endswith(list_s, ")")
+            tokens = MeTTaCore._tokenise(list_s[2:end-1])
+            "($(join(tokens[1:min(n, length(tokens))], " ")))"
+        else
+            n > 0 ? list_s : "()"
+        end
+    end)
+
+    MORK.register_grounded!("drop-atom", args -> begin
+        length(args) < 2 && return "()"
+        list_s = strip(args[1])
+        n = tryparse(Int, args[2])
+        n === nothing && return list_s
+        if startswith(list_s, "(") && endswith(list_s, ")")
+            tokens = MeTTaCore._tokenise(list_s[2:end-1])
+            "($(join(tokens[n+1:end], " ")))"
+        else
+            "()"
+        end
+    end)
+
     MORK.register_grounded!("index-atom", args -> begin
         length(args) < 2 && return nothing
         s   = strip(args[1])

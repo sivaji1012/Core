@@ -37,6 +37,8 @@ Use for `core_match` queries — do NOT use for storage (variable names lost).
 function to_sexpr_query(x::Any) :: String
     if x isa Symbol
         s = string(x)
+        # __var_x is the storage form of $x — convert back so MORK treats it as wildcard
+        startswith(s, "__var_") && return "\$" * s[7:end]
         return s   # $x stays as-is — MORK parses it as a wildcard variable
     end
     x isa String  && return x
@@ -117,7 +119,11 @@ function core_add!(s::CoreSpace, atom::Any)
     isempty(sexpr) && return nothing
     try space_add_all_sexpr!(s.inner, sexpr)
     catch e; @warn "core_add! failed" atom=sexpr exception=e; end
-    empty!(s.rule_cache)   # invalidate cache on any mutation
+    # Only invalidate rule cache when a rule (= head body) is added.
+    # Data atoms like (edge robin bird) cannot affect rule lookup results.
+    if atom isa Vector && length(atom) == 3 && atom[1] === Symbol("=")
+        empty!(s.rule_cache)
+    end
     nothing
 end
 
@@ -129,7 +135,7 @@ function core_remove!(s::CoreSpace, atom::Any)
         e = sexpr_to_expr(sexpr)
         remove_val_at!(s.inner.btm, e.buf)
     catch e; @warn "core_remove! failed" atom=sexpr exception=e; end
-    empty!(s.rule_cache)   # invalidate cache on any mutation
+    empty!(s.rule_cache)   # removing anything could affect rule lookups
     nothing
 end
 
