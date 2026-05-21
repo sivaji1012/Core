@@ -102,11 +102,12 @@ MeTTa atom space backed by a real MORK.Space byte trie.
 Atoms are stored as S-expression byte-paths via space_add_all_sexpr!.
 """
 mutable struct CoreSpace
-    inner :: Space
+    inner      :: Space
+    rule_cache :: Dict{Symbol, Vector{Tuple{Vector{Any}, Any}}}
 end
 
 """Create a new empty CoreSpace."""
-new_core_space() = CoreSpace(new_space())
+new_core_space() = CoreSpace(new_space(), Dict{Symbol, Vector{Tuple{Vector{Any}, Any}}}())
 
 # ── Atom operations ───────────────────────────────────────────────────────────
 
@@ -116,6 +117,7 @@ function core_add!(s::CoreSpace, atom::Any)
     isempty(sexpr) && return nothing
     try space_add_all_sexpr!(s.inner, sexpr)
     catch e; @warn "core_add! failed" atom=sexpr exception=e; end
+    empty!(s.rule_cache)   # invalidate cache on any mutation
     nothing
 end
 
@@ -127,6 +129,7 @@ function core_remove!(s::CoreSpace, atom::Any)
         e = sexpr_to_expr(sexpr)
         remove_val_at!(s.inner.btm, e.buf)
     catch e; @warn "core_remove! failed" atom=sexpr exception=e; end
+    empty!(s.rule_cache)   # invalidate cache on any mutation
     nothing
 end
 
@@ -161,6 +164,10 @@ Scan the trie for `(= (head_sym args...) body)` rule atoms.
 Returns list of (head_args, body) tuples.
 """
 function core_rules(s::CoreSpace, head_sym::Symbol) :: Vector{Tuple{Vector{Any}, Any}}
+    # Fast path: return cached rules (invalidated by core_add!/core_remove!)
+    cached = get(s.rule_cache, head_sym, nothing)
+    cached !== nothing && return cached
+
     rules = Tuple{Vector{Any}, Any}[]
     # Query with just the (= (head_sym ...) $body_) prefix — MORK matches
     # the constant prefix (=, head_sym) and we filter by head in the callback.
@@ -200,6 +207,7 @@ function core_rules(s::CoreSpace, head_sym::Symbol) :: Vector{Tuple{Vector{Any},
             end)
         catch; end
     end
+    s.rule_cache[head_sym] = rules   # cache result
     rules
 end
 

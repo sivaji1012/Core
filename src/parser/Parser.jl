@@ -89,10 +89,10 @@ function parse_atom(token::String)
         return Symbol(token)   # e.g. Symbol("\$x")
     end
     
-    # String literal
-    # String literal
+    # String literal — use prevind for Unicode-safe end-trim
     if startswith(token, "\"") && endswith(token, "\"")
-        return unescape_string(token[2:end-1])
+        inner = token[2 : prevind(token, lastindex(token))]
+        return unescape_string(inner)
     end
     
     # Number (Integer or Float)

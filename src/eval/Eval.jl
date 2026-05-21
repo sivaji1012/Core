@@ -119,7 +119,7 @@ Lines starting with `!` are executed; others are added as atoms.
 function run_metta(source::String, space::CoreSpace = default_space()) :: Vector{Any}
     results = Any[]
     # Use the proper parser to handle multi-line expressions and comments
-    exprs = try parse_metta(source) catch; Any[] end
+    exprs = try parse_metta(source) catch e; @warn "run_metta: parse error" exception=e; Any[] end
     for expr in exprs
         if expr isa Vector && !isempty(expr) && expr[1] === :!
             # Execution directive — evaluate the inner expression
