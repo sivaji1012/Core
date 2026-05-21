@@ -75,6 +75,7 @@ function eval_metta(@nospecialize(expr), space::CoreSpace = default_space()) :: 
     head === Symbol("import!")      && return _eval_import!(args, space)
     head === Symbol("git-import!")  && return _eval_git_import!(args, space)
     head === Symbol("bind!")        && return _eval_bind!(args, space)
+    head === Symbol("with-space")   && return _eval_with_space(args, space)
     head === Symbol("add-atom")    && return _eval_add_atom(args, space)
     head === Symbol("remove-atom") && return _eval_remove_atom(args, space)
     # exec atoms — add to MORK space and run calculus (AUSink/CountSink/HeadSink)
@@ -557,9 +558,41 @@ function _resolve_space(sp_arg::Any, default::CoreSpace) :: CoreSpace
     if sp_arg isa Symbol
         v = get(default.named_spaces, sp_arg, nothing)
         v !== nothing && return v   # Dict{Symbol,CoreSpace} — always a CoreSpace if present
+        # A &name that looks like a space reference but isn't bound is almost always a bug.
+        # Silent fallthrough to `default` would mutate the wrong space with no error.
+        sp_str = string(sp_arg)
+        if startswith(sp_str, "&")
+            error("Unresolved space reference: $sp_arg\n" *
+                  "Use (bind! $sp_arg (new-space)) before using it as a space arg, " *
+                  "or (with-space $sp_arg (new-space) ...) for a transient scope.")
+        end
     end
     resolved = try eval_metta(sp_arg, default) catch; nothing end
     resolved isa CoreSpace ? resolved : default
+end
+
+function _eval_with_space(args::Vector, space::CoreSpace)
+    # (with-space $var init-expr body...)
+    # Binds $var to a new (or provided) space for the dynamic extent of body,
+    # then removes the root reference on exit — enforces transient scratch lifetime.
+    # This is the language-level equivalent of "create in Julia, pass as arg":
+    #   (with-space &scratch (new-space)
+    #     (add-atom &scratch (candidate-rule))
+    #     (WILLIAM.Learn &scratch (test-atom)))
+    length(args) < 3 && return nothing
+    name     = args[1]                           # e.g. Symbol("&scratch")
+    init_val = eval_metta(args[2], space)        # evaluate (new-space) etc.
+    init_val isa CoreSpace || return nothing
+    name isa Symbol && (space.named_spaces[name] = init_val)
+    result = nothing
+    try
+        for body_expr in args[3:end]
+            result = eval_metta(body_expr, space)
+        end
+    finally
+        name isa Symbol && delete!(space.named_spaces, name)   # release root
+    end
+    result
 end
 
 function _eval_bind!(args::Vector, space::CoreSpace)
