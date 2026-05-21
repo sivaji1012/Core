@@ -166,8 +166,6 @@ function _eval_match(args::Vector, space::CoreSpace)
     sp_arg   = args[1]
     pattern  = args[2]
     template = length(args) >= 3 ? args[3] : pattern
-    # Resolve space reference
-    s = sp_arg === Symbol("&self") ? space : space
     s = _resolve_space(sp_arg, space)
     candidates = core_match(s, pattern)
     results = Any[]
@@ -549,24 +547,28 @@ function _eval_noreduce_eq(args::Vector)
     to_sexpr(args[1]) == to_sexpr(args[2]) ? :True : :False
 end
 
-# Module-level space registry — CoreSpace objects can't round-trip through MORK,
-# so named spaces (bind! &name (new-space)) are stored here directly.
-const _NAMED_SPACES = Dict{Symbol, CoreSpace}()
+# Named-space registry is scoped to the evaluation context (space.named_spaces).
+# Process-global _NAMED_SPACES was removed — it caused data races, cross-context
+# collisions, and unbounded memory leaks under concurrent/nested evaluation.
+# Each CoreSpace carries its own registry; bind! writes to space.named_spaces.
 
 function _resolve_space(sp_arg::Any, default::CoreSpace) :: CoreSpace
     sp_arg === Symbol("&self") && return default
-    sp_arg isa Symbol && haskey(_NAMED_SPACES, sp_arg) && return _NAMED_SPACES[sp_arg]
+    if sp_arg isa Symbol
+        v = get(default.named_spaces, sp_arg, nothing)
+        v isa CoreSpace && return v
+    end
     resolved = try eval_metta(sp_arg, default) catch; nothing end
     resolved isa CoreSpace ? resolved : default
 end
 
 function _eval_bind!(args::Vector, space::CoreSpace)
-    # (bind! name expr) — binds name to result; CoreSpaces go into _NAMED_SPACES
+    # (bind! name expr) — CoreSpaces go into space.named_spaces (context-scoped)
     length(args) < 2 && return nothing
     name = args[1]
     val  = eval_metta(args[2], space)
     if val isa CoreSpace && name isa Symbol
-        _NAMED_SPACES[name] = val
+        space.named_spaces[name] = val   # scoped to this context, not process-global
     else
         core_add!(space, [:(=), name, val])
     end

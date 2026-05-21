@@ -104,12 +104,15 @@ MeTTa atom space backed by a real MORK.Space byte trie.
 Atoms are stored as S-expression byte-paths via space_add_all_sexpr!.
 """
 mutable struct CoreSpace
-    inner      :: Space
-    rule_cache :: Dict{Symbol, Vector{Tuple{Vector{Any}, Any}}}
+    inner        :: Space
+    rule_cache   :: Dict{Symbol, Vector{Tuple{Vector{Any}, Any}}}
+    named_spaces :: Dict{Symbol, Any}   # bind! registry — scoped to this context
 end
 
 """Create a new empty CoreSpace."""
-new_core_space() = CoreSpace(new_space(), Dict{Symbol, Vector{Tuple{Vector{Any}, Any}}}())
+new_core_space() = CoreSpace(new_space(),
+    Dict{Symbol, Vector{Tuple{Vector{Any}, Any}}}(),
+    Dict{Symbol, Any}())
 
 # ── Atom operations ───────────────────────────────────────────────────────────
 
@@ -119,10 +122,14 @@ function core_add!(s::CoreSpace, atom::Any)
     isempty(sexpr) && return nothing
     try space_add_all_sexpr!(s.inner, sexpr)
     catch e; @warn "core_add! failed" atom=sexpr exception=e; end
-    # Only invalidate rule cache when a rule (= head body) is added.
-    # Data atoms like (edge robin bird) cannot affect rule lookup results.
+    # Per-head cache invalidation: adding (= (head args) body) can only affect
+    # lookups for `head` — other heads' cached rules are unchanged.
+    # Full flush (empty!) only when the affected head can't be identified.
     if atom isa Vector && length(atom) == 3 && atom[1] === Symbol("=")
-        empty!(s.rule_cache)
+        head_expr = atom[2]
+        head_sym  = head_expr isa Vector && !isempty(head_expr) ? head_expr[1] :
+                    head_expr isa Symbol ? head_expr : nothing
+        head_sym isa Symbol ? delete!(s.rule_cache, head_sym) : empty!(s.rule_cache)
     end
     nothing
 end
@@ -175,12 +182,6 @@ function core_rules(s::CoreSpace, head_sym::Symbol) :: Vector{Tuple{Vector{Any},
     cached !== nothing && return cached
 
     rules = Tuple{Vector{Any}, Any}[]
-    # Query with just the (= (head_sym ...) $body_) prefix — MORK matches
-    # the constant prefix (=, head_sym) and we filter by head in the callback.
-    # Using $body_ as a single wildcard for the whole body works because MORK
-    # variables match any single sub-expression at that position.
-    # The head arity is handled by the filter on head_part[1] === head_sym.
-    pat = "(= ($head_sym \$v0 \$v1 \$v2 \$v3) \$body_)"
     pats = [
         "(= ($head_sym) \$body_)",
         "(= ($head_sym \$v0) \$body_)",
