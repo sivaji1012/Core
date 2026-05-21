@@ -556,7 +556,7 @@ function _resolve_space(sp_arg::Any, default::CoreSpace) :: CoreSpace
     sp_arg === Symbol("&self") && return default
     if sp_arg isa Symbol
         v = get(default.named_spaces, sp_arg, nothing)
-        v isa CoreSpace && return v
+        v !== nothing && return v   # Dict{Symbol,CoreSpace} — always a CoreSpace if present
     end
     resolved = try eval_metta(sp_arg, default) catch; nothing end
     resolved isa CoreSpace ? resolved : default

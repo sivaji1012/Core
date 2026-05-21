@@ -106,13 +106,13 @@ Atoms are stored as S-expression byte-paths via space_add_all_sexpr!.
 mutable struct CoreSpace
     inner        :: Space
     rule_cache   :: Dict{Symbol, Vector{Tuple{Vector{Any}, Any}}}
-    named_spaces :: Dict{Symbol, Any}   # bind! registry — scoped to this context
+    named_spaces :: Dict{Symbol, CoreSpace}   # bind! registry — scoped to this context
 end
 
 """Create a new empty CoreSpace."""
 new_core_space() = CoreSpace(new_space(),
     Dict{Symbol, Vector{Tuple{Vector{Any}, Any}}}(),
-    Dict{Symbol, Any}())
+    Dict{Symbol, CoreSpace}())
 
 # ── Atom operations ───────────────────────────────────────────────────────────
 
