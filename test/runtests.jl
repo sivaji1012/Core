@@ -282,6 +282,121 @@ end
     @test eval_metta([Symbol("noeval"), [:+, 1, 2]], s) == [:+, 1, 2]
 end
 
+# ─────────────────────────────────────────────────────────────────────────────
+@testset "26. metta\"...\" string macro" begin
+    # The macro must not interpolate — MeTTa $x variables survive verbatim,
+    # equivalent to raw"..." but self-documenting at the call site.
+    @test metta"(foo $x $y)" == raw"(foo $x $y)"
+    @test metta"(foo $x $y)" == "(foo \$x \$y)"
+    # Empty string round-trips.
+    @test metta"" == ""
+    # Triple-quoted form (the shape tests will use for multi-line programs)
+    # must also preserve $ verbatim.
+    prog = metta"""
+    (exec 0 (, (A $x $y)) (, (Result $x)))
+    """
+    @test occursin("\$x", prog)
+    @test occursin("\$y", prog)
+    @test !occursin("__var_", prog)   # never the storage form
+    # Sanity: result is a plain Julia String (not a wrapper).
+    @test metta"(a $x)" isa String
+end
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Stage 1 (multi-space-on-shared-trie): tests below exercise the
+# (shared::Space, prefix::Vector{UInt8}) construction path directly rather
+# than going through (bind! &name (new-space)).  Rationale: `bind!` ships
+# dormant in C-mode (per-space-own-trie) — the prefix machinery is recorded
+# as metadata only.  The architecture itself is exercised here so the bytes
+# under different prefixes really are isolated.
+@testset "27. Stage 1 — disjoint-prefix isolation" begin
+    using MeTTaCore: get_node_shared, new_core_space
+    shared = get_node_shared()
+    sa = new_core_space(shared, Vector{UInt8}("ns_a/"))
+    sb = new_core_space(shared, Vector{UInt8}("ns_b/"))
+    core_add!(sa, [:alpha, 1])
+    core_add!(sb, [:beta, 2])
+    # Each space sees ONLY its own atoms via core_atoms.
+    @test [:alpha, 1] ∈ core_atoms(sa)
+    @test [:beta,  2] ∉ core_atoms(sa)
+    @test [:beta,  2] ∈ core_atoms(sb)
+    @test [:alpha, 1] ∉ core_atoms(sb)
+end
+
+# ─────────────────────────────────────────────────────────────────────────────
+@testset "28. Stage 1 — cross-prefix match does not bleed" begin
+    using MeTTaCore: get_node_shared, new_core_space
+    shared = get_node_shared()
+    sa = new_core_space(shared, Vector{UInt8}("scope_a/"))
+    sb = new_core_space(shared, Vector{UInt8}("scope_b/"))
+    core_add!(sa, [:item, :x])
+    core_add!(sa, [:item, :y])
+    core_add!(sb, [:item, :z])
+    # core_match in sa returns only sa's items; sb's atoms are byte-disjoint.
+    sa_results = core_match(sa, [:item, Symbol("\$v")])
+    sb_results = core_match(sb, [:item, Symbol("\$v")])
+    @test length(sa_results) == 2
+    @test length(sb_results) == 1
+    @test [:item, :z] ∉ sa_results
+    @test [:item, :x] ∉ sb_results
+end
+
+# ─────────────────────────────────────────────────────────────────────────────
+@testset "29. Stage 1 — with-space saves and restores prior binding" begin
+    parent = fresh()
+    inner1 = new_core_space()
+    inner2 = new_core_space()
+    parent.named_spaces[Symbol("&scratch")] = inner1
+    # `(with-space &scratch inner2 ...)` should rebind to inner2 inside the
+    # body and restore inner1 on exit.
+    eval_metta([Symbol("with-space"), Symbol("&scratch"), inner2,
+                [Symbol("add-atom"), Symbol("&scratch"), [:probe]]],
+               parent)
+    # After exit, &scratch is back to inner1 — probe lives in inner2, not inner1.
+    @test parent.named_spaces[Symbol("&scratch")] === inner1
+    @test [:probe] ∈ core_atoms(inner2)
+    @test [:probe] ∉ core_atoms(inner1)
+end
+
+# ─────────────────────────────────────────────────────────────────────────────
+@testset "30. Stage 1 — .act snapshot / load round-trip" begin
+    using MeTTaCore: get_node_shared, new_core_space, set_act_dir!,
+                     snapshot_space_to_act!, act_exists, load_act_source
+    tmpdir = mktempdir()
+    set_act_dir!(tmpdir)
+    shared = get_node_shared()
+    src = new_core_space(shared, Vector{UInt8}("snap_test/"))
+    core_add!(src, [:persisted, 1])
+    core_add!(src, [:persisted, 2])
+    @test snapshot_space_to_act!(src, "smoke_round_trip") === true
+    @test act_exists("smoke_round_trip")
+    # load_act_source returns (ACTSource, mmaps) — just confirm it constructs
+    # without erroring (queryability under multi-source factor is exercised
+    # at the MORK layer's own test suite).
+    handle, mmaps = load_act_source("smoke_round_trip")
+    @test handle !== nothing
+    @test mmaps isa Dict
+    # Empty prefix snapshot is rejected (returns false, no file written).
+    empty_src = new_core_space(shared, Vector{UInt8}("never_used/"))
+    @test snapshot_space_to_act!(empty_src, "empty_smoke") === false
+    @test !act_exists("empty_smoke")
+end
+
+# ─────────────────────────────────────────────────────────────────────────────
+@testset "31. Stage 1 — read-your-writes within a prefix" begin
+    using MeTTaCore: get_node_shared, new_core_space
+    shared = get_node_shared()
+    s = new_core_space(shared, Vector{UInt8}("ryw/"))
+    @test isempty(core_atoms(s))
+    core_add!(s, [:fact, 1])
+    @test [:fact, 1] ∈ core_atoms(s)
+    core_add!(s, [:fact, 2])
+    @test length(core_atoms(s)) == 2
+    core_remove!(s, [:fact, 1])
+    @test [:fact, 1] ∉ core_atoms(s)
+    @test [:fact, 2] ∈ core_atoms(s)
+end
+
 end # testset "Core MeTTa Compatibility Suite"
 
 println("\n✓ Core package tests passed.")

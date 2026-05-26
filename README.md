@@ -9,7 +9,7 @@ Zero dependency on legacy PRIMUS_Core or PRIMUS_Metagraph. This is the redesigne
 ```
 MORK.Space  (byte-trie, PathMap substrate)
     ↓
-CoreSpace   (AbstractAtomSpace — add, match, remove, rules)
+CoreSpace   (shared trie + byte-prefix scope — Stage 1)
     ↓
 Parser      (S-expression parser → plain Julia values)
     ↓
@@ -20,6 +20,13 @@ Eval        (MeTTa interpreter: rule rewriting + special forms)
     ↓
 stdlib/     (pure .metta files — hot-reloadable, no recompile)
 ```
+
+**Multi-space topology** (Hyperon WP §9 Figure 4): a single MORK trie hosts
+disjoint byte-prefix regions — `common:/`, `app/games:/`, `app/social:/`,
+etc. Stage 1 ships the infrastructure; per-app spaces currently bind in
+canonical isolation mode (each gets its own trie). See
+[docs/STAGE1_ARCHITECTURE.md](docs/STAGE1_ARCHITECTURE.md) for the
+shipped-but-dormant prefix machinery and the Stage 2 polarity flip.
 
 ## What's grounded vs pure MeTTa
 
@@ -82,12 +89,22 @@ results = run_metta("""
 
 87/87 tests from the [MeTTa vs PeTTa comparison suite](https://github.com/tezena/PeTTa-and-MeTTa-comparisons) pass.
 
+116/116 internal tests pass (94 MeTTa-compat + 22 Stage 1 prefix tests:
+disjoint prefixes, cross-prefix match isolation, `with-space` save-restore,
+`.act` round-trip, read-your-writes).
+
 ## Testing
 
 ```julia
 using Pkg
 Pkg.test("MeTTaCore")
 ```
+
+## Further reading
+
+- [docs/STAGE1_ARCHITECTURE.md](docs/STAGE1_ARCHITECTURE.md) — multi-space topology
+- [docs/SEMANTIC_DELTA.md](docs/SEMANTIC_DELTA.md) — Core vs PRIMUS_Core semantic checklist
+- [docs/ATOM_TYPING_TRADEOFF.md](docs/ATOM_TYPING_TRADEOFF.md) — why `Vector{Any}` stays for now
 
 ## License
 

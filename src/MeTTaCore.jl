@@ -30,11 +30,21 @@ using MORK
 using MORK: Space, new_space,
             space_add_all_sexpr!, space_dump_all_sexpr,
             space_val_count, space_metta_calculus!, space_metta_calculus_at!,
-            sexpr_to_expr, expr_serialize, remove_val_at!, read_zipper,
+            sexpr_to_expr, expr_serialize, read_zipper,
             space_query_multi, ExecError,
-            register_grounded!, is_grounded, GROUNDED_REGISTRY
+            register_grounded!, is_grounded, GROUNDED_REGISTRY,
+            # .act + multi-source machinery (Stage 1 CoreSpaceActIO)
+            asource_new, source_factor, ACT_PATH,
+            # Per-prefix permits — StatusMap lives in MORK's server layer
+            StatusMap, sm_get_read_permission, sm_release_read!,
+            sm_get_write_permission, sm_release_write!
+using PathMap: PathMap, UnitVal, UNIT_VAL,
+               read_zipper_at_path, zipper_to_next_val!, zipper_path,
+               set_val_at!, remove_val_at!,
+               act_from_zipper, act_save, ArenaCompactTree
 
 include("space/CoreSpace.jl")
+include("space/CoreSpaceActIO.jl")   # Stage 1 .act lifecycle (snapshot / load / open_node! / close_node!)
 include("parser/Parser.jl")
 include("primitives/Primitives.jl")
 include("primitives/AtomOps.jl")
@@ -93,27 +103,53 @@ function register_all_primitives!(eval_fn::Union{Function,Nothing} = nothing)
 end
 
 """
-    register_for_space!(space::CoreSpace)
+    register_for_space!(space::CoreSpace; use_supercompiler=false)
 
 Register all primitives with `foldl-atom`/`map-atom`/`filter-atom` wired
-to evaluate sub-expressions in `space`.  This is the correct setup when
-rules like `WILLIAM.size` (which use `foldl-atom` recursively) are loaded
-into `space`.
+to evaluate sub-expressions in `space`.
 
-Usage (replaces the manual eval_fn pattern):
+When `use_supercompiler=true`, all exec atoms evaluated in this space are
+routed through `MorkSupercompiler.plan!` which applies join-order reordering
+and Rule-of-64 source decomposition before running MORK calculus.  Output
+contract is identical to the default path (same trie mutations, no approx
+pipeline engaged).
+
+Opt-in rationale: SET semantics is safe by construction (PipelineDecompose's
+flow_vars carries every final-template variable through every intermediate
+_sc_tmp* hop — verified transitively for chained decompositions).  CountSink
+safety is conditional: dedup only collapses identical *final* atoms, so
+count-shaped reads are correct iff distinct binding paths never produce the
+same final atom.  Algorithms with that property (MetaMo, MOSES) can safely
+opt in.  Algorithms where two paths legitimately produce duplicate finals
+(WILLIAM.count, WILLIAM.dict-size) need workload-level verification first.
+
+Flag grain: per-space, not per-rule.  Every exec atom in this space gets
+decomposed.  Acceptable for spaces holding a coherent algorithm library;
+for spaces mixing safe and unsafe rules, this is too coarse and would need
+per-exec-atom markers in the byte trie.
+
+Usage:
     s = new_core_space()
-    register_for_space!(s)
+    register_for_space!(s)                          # default: raw MORK calculus
+    register_for_space!(s; use_supercompiler=true)  # Rule-of-64 decomposition
     load_stdlib!(s)
     run_metta("!(import! &self (library lib_william))", s)
 """
-function register_for_space!(space::CoreSpace)
+function register_for_space!(space::CoreSpace; use_supercompiler::Bool = false)
+    use_supercompiler && enable_sc!(space)
     register_core_primitives!()
     _register_atom_ops!(expr_str -> to_sexpr(eval_metta(from_sexpr(expr_str), space)))
 end
 
-export CoreSpace, new_core_space
+export CoreSpace, new_core_space, enable_sc!
 export core_add!, core_remove!, core_match, core_rules, core_atoms
 export core_calculus!, core_calculus_at!
+# Stage 1 multi-space + .act lifecycle
+export PREFIX_REGISTRY, register_prefix!, lookup_prefix, unregister_prefix!
+export get_node_shared, derive_prefix_from_name, rebind_to_shared_prefix
+export with_read_permit, with_write_permit, node_status_map
+export snapshot_space_to_act!, load_act_source, act_exists, set_act_dir!
+export open_node!, close_node!
 export to_sexpr, from_sexpr, to_sexpr_query, _tokenise
 export parse_metta, parse_sexpr
 export eval_metta, run_metta, run_file, default_space

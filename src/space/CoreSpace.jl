@@ -100,73 +100,410 @@ end
 """
     CoreSpace
 
-MeTTa atom space backed by a real MORK.Space byte trie.
-Atoms are stored as S-expression byte-paths via space_add_all_sexpr!.
+MeTTa atom space — a reference to a shared `MORK.Space` byte trie PLUS a
+byte-prefix that scopes this space's operations to a region within the trie.
+
+Stage 1 (single-node) lets many CoreSpaces share one `Space` (one trie) with
+disjoint prefixes — implementing the whitepaper's Figure 4 model where a
+`common:/` shared-knowledge atomspace and per-app atomspaces (`app/games:/`,
+`app/social:/`, `app/bio:/`, `app/math:/`) live as siblings in one trie.
+
+Backward-compatible: `new_core_space()` still creates a CoreSpace with its
+own fresh trie and empty prefix (= root = whole trie), so existing isolated-
+atomspace callers see no change.
+
+Fields:
+- `inner`  — the shared `MORK.Space` (the byte trie). May be shared across
+             many CoreSpaces on the same node.
+- `prefix` — this space's byte-region within `inner`. Empty = root.
+- `rule_cache`       — per-space; cached `(= head body)` rules.
+- `named_spaces`     — per-space `bind!`/`with-space` registry (Symbol → CoreSpace).
+- `use_supercompiler`— route exec atoms through `MorkSupercompiler.plan!`.
 """
 mutable struct CoreSpace
-    inner        :: Space
-    rule_cache   :: Dict{Symbol, Vector{Tuple{Vector{Any}, Any}}}
-    named_spaces :: Dict{Symbol, CoreSpace}   # bind! registry — scoped to this context
+    inner            :: Space
+    prefix           :: Vector{UInt8}
+    rule_cache       :: Dict{Symbol, Vector{Tuple{Vector{Any}, Any}}}
+    named_spaces     :: Dict{Symbol, CoreSpace}
+    use_supercompiler :: Bool
 end
 
-"""Create a new empty CoreSpace."""
+"""
+    new_core_space() :: CoreSpace
+
+Create a CoreSpace with its own fresh shared trie and empty prefix (= root).
+Backward-compatible — every existing caller gets an isolated atomspace.
+
+For shared-trie semantics (multi-space on one node), use
+`new_core_space(shared::Space, prefix::Vector{UInt8})` or
+`register_prefix!(name, prefix)` to materialize via `_resolve_space`.
+"""
 new_core_space() = CoreSpace(new_space(),
+    UInt8[],
     Dict{Symbol, Vector{Tuple{Vector{Any}, Any}}}(),
-    Dict{Symbol, CoreSpace}())
+    Dict{Symbol, CoreSpace}(),
+    false)
+
+"""
+    new_core_space(shared::Space, prefix::Vector{UInt8}) :: CoreSpace
+
+Create a CoreSpace as a `(shared trie, byte-prefix)` reference. Atoms live
+in `shared`; this CoreSpace's operations are scoped to `prefix`.
+
+Two CoreSpaces with the same `shared` and `prefix_compare(p1, p2) ==
+PREFIX_DISJOINT` operate concurrently under MORK's `StatusMap` permits
+(see Step 3); overlapping prefixes serialize.
+"""
+new_core_space(shared::Space, prefix::Vector{UInt8}) =
+    CoreSpace(shared, copy(prefix),
+              Dict{Symbol, Vector{Tuple{Vector{Any}, Any}}}(),
+              Dict{Symbol, CoreSpace}(),
+              false)
+
+# ── Node-level prefix registry ────────────────────────────────────────────────
+# Stage 1: process-level Symbol → byte-prefix mapping.  Used by Eval.jl's
+# `_resolve_space` to materialize named spaces like `&common`, `&app/games`
+# as `(shared, prefix)` CoreSpaces.
+#
+# Multi-node concerns (Stage 2) will replace this with a per-node registry
+# stored on the shared Space itself, but Stage 1 keeps it process-global for
+# simplicity and ergonomic single-node use.
+
+const PREFIX_REGISTRY = Dict{Symbol, Vector{UInt8}}()
+
+"""
+    register_prefix!(name::Symbol, prefix::Vector{UInt8})
+
+Register a symbolic name → byte-prefix mapping in the process-level
+`PREFIX_REGISTRY`.  The bytes are stored verbatim (a raw prefix into the
+trie, NOT an S-expression).  By convention, prefixes end with `:/`
+(e.g. `Vector{UInt8}("common:/")`) to be human-debuggable and to guarantee
+disjointness across siblings (`prefix_compare` will return `PREFIX_DISJOINT`).
+"""
+function register_prefix!(name::Symbol, prefix::Vector{UInt8})
+    PREFIX_REGISTRY[name] = copy(prefix)
+    nothing
+end
+
+"""
+    lookup_prefix(name::Symbol) :: Union{Vector{UInt8}, Nothing}
+
+Retrieve a registered prefix or `nothing` if unregistered.
+"""
+lookup_prefix(name::Symbol) = get(PREFIX_REGISTRY, name, nothing)
+
+"""
+    unregister_prefix!(name::Symbol)
+
+Remove a name → prefix mapping.  Used by `with-space`'s exit cleanup when
+the bound name didn't exist prior to the scope.
+"""
+unregister_prefix!(name::Symbol) = (delete!(PREFIX_REGISTRY, name); nothing)
+
+# ── Node-shared trie (Stage 1 C′ — shared-default + bind-required-for-prefix) ──
+#
+# A single MORK.Space per process for all named-and-bound CoreSpaces.
+# `(bind! &name (new-space))` attaches the bound name to a derived prefix
+# in this shared trie; cross-space queries are byte-walks at different
+# prefixes in the same trie (matching the metagraph-philosophy default).
+#
+# Anonymous `(new-space)` calls — those NOT bound to a name — keep their
+# own fresh trie (preserves the canonical "scratch space" pattern).  Only
+# `bind!` triggers prefix derivation + shared-trie attachment.
+
+const NODE_SHARED = Ref{Union{Space, Nothing}}(nothing)
+
+"""
+    get_node_shared() :: Space
+
+Return the process-level shared MORK.Space, lazy-initializing on first
+access.  Multi-node concerns (Stage 2) replace this with a per-node
+context bound to a specific physical machine.
+"""
+function get_node_shared() :: Space
+    NODE_SHARED[] === nothing && (NODE_SHARED[] = new_space())
+    NODE_SHARED[]
+end
+
+"""
+    derive_prefix_from_name(name::Symbol) :: Union{Vector{UInt8}, Nothing}
+
+Derive a byte-prefix from a MeTTa name:
+  `:&common`      → `"common:/"`
+  `:&app/games`   → `"app/games:/"`
+  `:&app/social`  → `"app/social:/"`
+
+Returns `nothing` for names that don't start with `&` (those bind as
+regular `(= name val)` atoms, not as space references).
+
+The `:/` suffix is a human-debuggable separator that also guarantees
+`prefix_compare(p1, p2) == PREFIX_DISJOINT` for distinct sibling names
+(no name is a byte-prefix of another).  E.g. `"app:/"` vs `"app/games:/"`
+remain disjoint because the trailing `/` of `"app:/"` differs from the
+`/games` continuation.
+"""
+function derive_prefix_from_name(name::Symbol) :: Union{Vector{UInt8}, Nothing}
+    s = string(name)
+    startswith(s, "&") || return nothing
+    Vector{UInt8}(s[2:end] * ":/")
+end
+
+"""
+    rebind_to_shared_prefix(src::CoreSpace, prefix::Vector{UInt8}) :: CoreSpace
+
+Construct a `(shared, prefix)` CoreSpace, migrating any pre-existing atoms
+from `src` into the new prefix region.  This is the C′-mode transformation
+applied by `_eval_bind!` when a name is bound to a CoreSpace value.
+
+For the canonical pattern `(bind! &name (new-space))`, `src` is empty and
+this is just an allocation.  For pre-populated sources, atoms migrate via
+`core_atoms` + `core_add!`.
+"""
+function rebind_to_shared_prefix(src::CoreSpace, prefix::Vector{UInt8}) :: CoreSpace
+    shared  = get_node_shared()
+    wrapped = new_core_space(shared, prefix)
+    # Migrate atoms from src (typically empty for the (bind! &name (new-space))
+    # pattern; non-empty if user pre-populated before binding).
+    for atom in core_atoms(src)
+        core_add!(wrapped, atom)
+    end
+    wrapped
+end
+
+# ── Node-level concurrency permits (Stage 1) ──────────────────────────────────
+# A single StatusMap per process tracks per-prefix read/write permissions for
+# all CoreSpaces sharing the node's trie.  Two CoreSpaces with
+# `prefix_compare(p1, p2) == PREFIX_DISJOINT` acquire permits independently
+# and proceed in parallel; overlapping prefixes serialize via the permits.
+#
+# Lazy-init: `StatusMap()` is cheap (just a few empty Dicts + a ReentrantLock)
+# but we keep it Ref-wrapped so module load doesn't depend on MORK exports
+# being resolved at parse-time.
+const NODE_STATUS_MAP = Ref{Any}(nothing)
+
+function node_status_map() :: StatusMap
+    NODE_STATUS_MAP[] === nothing && (NODE_STATUS_MAP[] = StatusMap())
+    NODE_STATUS_MAP[]
+end
+
+"""
+    with_read_permit(f, s::CoreSpace)
+
+Acquire a read permit on `s.prefix` via the node's StatusMap, run `f()`,
+release.  Empty prefix is a no-op (root-prefix has no isolation).
+
+Errors loudly if the prefix is currently held by a writer.  For Stage 1
+single-threaded use this never triggers; future multi-threaded paths
+will see this as the back-pressure mechanism.
+"""
+function with_read_permit(f::Function, s::CoreSpace)
+    isempty(s.prefix) && return f()
+    perm = sm_get_read_permission(node_status_map(), s.prefix)
+    perm === nothing && error("CoreSpace read denied: prefix $(_prefix_str(s.prefix)) is locked for write")
+    try
+        f()
+    finally
+        sm_release_read!(node_status_map(), perm)
+    end
+end
+
+"""
+    with_write_permit(f, s::CoreSpace)
+
+Acquire an exclusive write permit on `s.prefix` via the node's StatusMap,
+run `f()`, release.  Empty prefix is a no-op.
+
+Errors loudly if the prefix has active readers or another writer.
+"""
+function with_write_permit(f::Function, s::CoreSpace)
+    isempty(s.prefix) && return f()
+    perm = sm_get_write_permission(node_status_map(), s.prefix)
+    perm === nothing && error("CoreSpace write denied: prefix $(_prefix_str(s.prefix)) has active readers or another writer")
+    try
+        f()
+    finally
+        sm_release_write!(node_status_map(), perm)
+    end
+end
+
+# Pretty-print a prefix-bytes value for error messages.
+function _prefix_str(p::Vector{UInt8})
+    try
+        String(copy(p))
+    catch
+        bytes2hex(p)
+    end
+end
+
+"""
+    enable_sc!(space) → space
+
+Enable Rule-of-64 decomposed execution for all exec atoms in this space.
+
+Grain note: the flag is per-space, not per-rule.  Every exec atom evaluated
+against this space goes through `MorkSupercompiler.plan!`.  This is fine for
+a space holding a coherent body of rules (a single algorithm's library).
+For a space mixing decomposition-safe and decomposition-unsafe rules, the
+per-space flag is too coarse — you would need per-exec-atom markers
+(extending the byte-trie's `_EXEC_PREFIX` machinery) to express that.
+"""
+enable_sc!(s::CoreSpace) = (s.use_supercompiler = true; s)
 
 # ── Atom operations ───────────────────────────────────────────────────────────
 
-"""Add an atom to the space. Accepts any Julia value (converted to S-expr)."""
+"""Add an atom to the space. Accepts any Julia value (converted to S-expr).
+
+The atom is stored at byte-path `s.prefix ++ atom_bytes` in the shared trie.
+For root-prefixed spaces (`s.prefix == UInt8[]`), this is the original
+whole-trie behavior — `space_add_all_sexpr!` is used directly.
+For prefixed spaces (Stage 1 multi-space), the atom is parsed once and
+stored via byte-level `set_val_at!` with the prefix prepended.
+"""
 function core_add!(s::CoreSpace, atom::Any)
     sexpr = to_sexpr(atom)
     isempty(sexpr) && return nothing
-    try space_add_all_sexpr!(s.inner, sexpr)
-    catch e; @warn "core_add! failed" atom=sexpr exception=e; end
-    # Per-head cache invalidation: adding (= (head args) body) can only affect
-    # lookups for `head` — other heads' cached rules are unchanged.
-    # Full flush (empty!) only when the affected head can't be identified.
-    if atom isa Vector && length(atom) == 3 && atom[1] === Symbol("=")
-        head_expr = atom[2]
-        head_sym  = head_expr isa Vector && !isempty(head_expr) ? head_expr[1] :
-                    head_expr isa Symbol ? head_expr : nothing
-        head_sym isa Symbol ? delete!(s.rule_cache, head_sym) : empty!(s.rule_cache)
+    with_write_permit(s) do
+        try
+            if isempty(s.prefix)
+                # Root prefix: original fast path, preserves multi-atom sexpr parsing.
+                space_add_all_sexpr!(s.inner, sexpr)
+            else
+                # Prefixed: parse to bytes, prepend prefix, set_val_at!.
+                # Single-atom semantics — to_sexpr produces one atom per call.
+                e = sexpr_to_expr(sexpr)
+                set_val_at!(s.inner.btm, vcat(s.prefix, e.buf), UNIT_VAL)
+            end
+        catch e; @warn "core_add! failed" atom=sexpr exception=e; end
+        # Per-head cache invalidation: adding (= (head args) body) can only affect
+        # lookups for `head` — other heads' cached rules are unchanged.
+        # Full flush (empty!) only when the affected head can't be identified.
+        if atom isa Vector && length(atom) == 3 && atom[1] === Symbol("=")
+            head_expr = atom[2]
+            head_sym  = head_expr isa Vector && !isempty(head_expr) ? head_expr[1] :
+                        head_expr isa Symbol ? head_expr : nothing
+            head_sym isa Symbol ? delete!(s.rule_cache, head_sym) : empty!(s.rule_cache)
+        end
     end
     nothing
 end
 
-"""Remove an atom from the space by its S-expression form."""
+"""Remove an atom from the space by its S-expression form.
+
+The atom is looked up at byte-path `s.prefix ++ atom_bytes`; only that
+exact path is removed.  For root-prefixed spaces this is unchanged from
+the pre-Stage-1 behavior.
+"""
 function core_remove!(s::CoreSpace, atom::Any)
     sexpr = to_sexpr(atom)
     isempty(sexpr) && return nothing
-    try
-        e = sexpr_to_expr(sexpr)
-        remove_val_at!(s.inner.btm, e.buf)
-    catch e; @warn "core_remove! failed" atom=sexpr exception=e; end
-    empty!(s.rule_cache)   # removing anything could affect rule lookups
+    with_write_permit(s) do
+        try
+            e = sexpr_to_expr(sexpr)
+            remove_val_at!(s.inner.btm, vcat(s.prefix, e.buf))
+        catch e; @warn "core_remove! failed" atom=sexpr exception=e; end
+        empty!(s.rule_cache)   # removing anything could affect rule lookups
+    end
     nothing
+end
+
+"""
+    _is_var_symbol(x) → Bool
+
+Variable check: `\$name` or storage form `__var_name`.  Used by the structural
+pre-filter to know which positions are wildcards.
+"""
+_is_var_symbol(x) =
+    x isa Symbol && (startswith(string(x), "\$") || startswith(string(x), "__var_"))
+
+"""
+    _shape_match(pattern, atom) → Bool
+
+Top-level structural compatibility check (no binding).  Returns true when
+`atom` could possibly unify with `pattern`:
+
+  - pattern is a variable → match
+  - both are Vectors of same length, with element-wise shape match
+  - both are equal scalars → match
+  - else → false
+
+This is a cheap pre-filter that lets us reject obviously-incompatible atoms
+without paying the cost of `_unify` (which lives in Eval.jl and would create
+a circular include).  `_eval_match` still runs full `_unify` on whatever
+passes — the filter only narrows the candidate set.
+"""
+function _shape_match(@nospecialize(pattern), @nospecialize(atom)) :: Bool
+    _is_var_symbol(pattern) && return true
+    if pattern isa Vector
+        atom isa Vector || return false
+        length(pattern) == length(atom) || return false
+        for i in eachindex(pattern)
+            _shape_match(pattern[i], atom[i]) || return false
+        end
+        return true
+    end
+    pattern == atom
+end
+
+"""
+    _walk_atoms(s::CoreSpace) → Iterator-like callback path
+
+Internal: walk every stored value under `s.prefix` and invoke `f(atom)` for
+each.  Uses `space_dump_all_sexpr` (whole-trie text dump) for root-prefix —
+matches `core_atoms`'s fast path.  For prefixed spaces, walks the subtrie
+via `read_zipper_at_path` + `zipper_to_next_val!` and serializes each
+relative-to-anchor path through `expr_serialize`.
+
+Why we walk instead of `space_query_multi`: MORK's `space_query_multi` short-
+circuits arity-1 patterns (`(, single)`) and returns the pattern itself
+without iterating the trie.  Any single-pattern match would therefore find
+nothing — which broke `(match &self pat tpl)` until this rewrite.  The
+read-zipper walk is the canonical "enumerate atoms" path (mirroring
+`space_dump_all_sexpr`); callers do structural filtering in Julia.
+"""
+function _walk_atoms(f::Function, s::CoreSpace)
+    if isempty(s.prefix)
+        for line in split(space_dump_all_sexpr(s.inner), '\n')
+            ls = strip(line)
+            isempty(ls) && continue
+            try
+                f(from_sexpr(ls))
+            catch; end
+        end
+    else
+        rz = read_zipper_at_path(s.inner.btm, s.prefix)
+        while zipper_to_next_val!(rz)
+            rel_bytes = collect(zipper_path(rz))
+            try
+                f(from_sexpr(strip(expr_serialize(rel_bytes))))
+            catch; end
+        end
+    end
 end
 
 """
     core_match(s, pattern) → Vector{Any}
 
 Query the trie for atoms matching `pattern`. Variables (\$x) act as wildcards.
-Returns a list of matching atoms as Julia values.
+Returns a list of CANDIDATE atoms — callers (typically `_eval_match`) apply
+`_unify` for the final binding-correct filter.
+
+The query is scoped to `s.prefix` — only atoms stored under the space's byte
+prefix participate.
+
+Implementation note: walks the trie via `_walk_atoms` + `_shape_match`
+structural pre-filter rather than `space_query_multi`'s arity-1 fast-path,
+which returns the pattern itself without iterating (see `_walk_atoms`
+docstring).  Cost is O(N) in trie size with a cheap shape rejection — the
+proper structural-trie-matching primitive in MORK is a future optimization.
 """
 function core_match(s::CoreSpace, pattern::Any) :: Vector{Any}
-    sexpr = to_sexpr_query(pattern)   # keep $x as MORK wildcards
-    isempty(sexpr) && return Any[]
+    pattern === nothing && return Any[]
     results = Any[]
-    try
-        comma_expr = sexpr_to_expr("(, $sexpr)")
-        space_query_multi(s.inner.btm, comma_expr, (bindings, path) -> begin
-            try
-                buf  = path isa MORK.Expr ? path.buf : collect(UInt8, path)
-                str  = expr_serialize(buf)
-                push!(results, from_sexpr(str))
-            catch; end
-            true
-        end)
-    catch e; @warn "core_match failed" pattern=sexpr exception=e; end
+    with_read_permit(s) do
+        _walk_atoms(s) do atom
+            _shape_match(pattern, atom) && push!(results, atom)
+        end
+    end
     results
 end
 
@@ -175,59 +512,102 @@ end
 
 Scan the trie for `(= (head_sym args...) body)` rule atoms.
 Returns list of (head_args, body) tuples.
+
+Scoped to `s.prefix` like `core_match` — only rules stored under this space's
+prefix region are returned.  Result is cached per-head; cache invalidated
+by `core_add!`/`core_remove!`.
+
+Implementation note: same trie-walk + Julia-side filter as `core_match`
+(MORK's arity-1 fast-path returns the pattern itself, which would never
+match real rules).  The narrow shape filter `atom[1] === :(=) && atom[2][1]
+=== head_sym` rejects ~99% of stdlib atoms without allocation.
 """
 function core_rules(s::CoreSpace, head_sym::Symbol) :: Vector{Tuple{Vector{Any}, Any}}
-    # Fast path: return cached rules (invalidated by core_add!/core_remove!)
     cached = get(s.rule_cache, head_sym, nothing)
     cached !== nothing && return cached
 
     rules = Tuple{Vector{Any}, Any}[]
-    pats = [
-        "(= ($head_sym) \$body_)",
-        "(= ($head_sym \$v0) \$body_)",
-        "(= ($head_sym \$v0 \$v1) \$body_)",
-        "(= ($head_sym \$v0 \$v1 \$v2) \$body_)",
-        "(= ($head_sym \$v0 \$v1 \$v2 \$v3) \$body_)",
-        "(= ($head_sym \$v0 \$v1 \$v2 \$v3 \$v4) \$body_)",
-    ]
-    seen = Set{String}()
-    for pat in pats
-        try
-            comma_expr = sexpr_to_expr("(, $pat)")
-            space_query_multi(s.inner.btm, comma_expr, (bindings, path) -> begin
-                try
-                    buf  = path isa MORK.Expr ? path.buf : collect(UInt8, path)
-                    key  = bytes2hex(buf)
-                    key in seen && return true
-                    push!(seen, key)
-                    atom = from_sexpr(expr_serialize(buf))
-                    if atom isa Vector && length(atom) == 3 && atom[1] === :(=)
-                        head_part = atom[2]
-                        body      = atom[3]
-                        if head_part isa Vector && !isempty(head_part) &&
-                           head_part[1] === head_sym
-                            push!(rules, (head_part[2:end], body))
-                        end
-                    end
-                catch; end
-                true
-            end)
-        catch; end
+    with_read_permit(s) do
+        _walk_atoms(s) do atom
+            atom isa Vector && length(atom) == 3 && atom[1] === :(=) || return
+            head_part = atom[2]
+            body      = atom[3]
+            head_part isa Vector && !isempty(head_part) && head_part[1] === head_sym || return
+            push!(rules, (head_part[2:end], body))
+        end
     end
-    s.rule_cache[head_sym] = rules   # cache result
+    s.rule_cache[head_sym] = rules
     rules
 end
 
-"""Return all atoms in the space as Julia values."""
+"""Return all atoms in the space as Julia values.
+
+Scoped to `s.prefix`:
+- Empty prefix → original fast-path via `space_dump_all_sexpr` (whole trie)
+- Non-empty prefix → walk the subtrie anchored at `s.prefix` via a read
+  zipper; `zipper_path(rz)` returns paths RELATIVE to the anchor so they
+  are the bare atom expression bytes (no manual prefix stripping needed).
+"""
 function core_atoms(s::CoreSpace) :: Vector{Any}
-    [from_sexpr(strip(line))
-     for line in split(space_dump_all_sexpr(s.inner), '\n')
-     if !isempty(strip(line))]
+    if isempty(s.prefix)
+        return [from_sexpr(strip(line))
+                for line in split(space_dump_all_sexpr(s.inner), '\n')
+                if !isempty(strip(line))]
+    end
+    # Prefix-scoped: walk subtrie under s.prefix, serialize each value's
+    # relative-to-anchor path.  Mirrors the cmd_copy pattern in MORK Commands.jl.
+    # Acquired under read permit so concurrent writers in the same prefix
+    # serialize properly.
+    results = Any[]
+    with_read_permit(s) do
+        rz = read_zipper_at_path(s.inner.btm, s.prefix)
+        while zipper_to_next_val!(rz)
+            rel_bytes = collect(zipper_path(rz))
+            try
+                str = expr_serialize(rel_bytes)
+                push!(results, from_sexpr(strip(str)))
+            catch e
+                @warn "core_atoms: failed to deserialize atom in prefix region" exception=e
+            end
+        end
+    end
+    results
 end
 
-"""Forward MORK exec-atom calculus (runs MM2 exec atoms)."""
-core_calculus!(s::CoreSpace, steps::Int = typemax(Int)) =
-    space_metta_calculus!(s.inner, steps)
+"""Forward MORK exec-atom calculus (runs MM2 exec atoms).
 
+For empty `s.prefix` (the only state achievable through `bind!` in Stage 1's
+shipped C-mode), this is `space_metta_calculus!` against the whole trie.
+
+For non-empty `s.prefix` (Stage 2+ shared-trie multi-space — currently
+unreachable from MeTTa-level `bind!`), this errors loudly so the missing
+upstream primitive surfaces rather than silently no-op'ing.  The fix path
+is to land `space_metta_calculus_in_prefix!` in `sivaji1012/MORK` and
+restore the prefix-scoped call here.
+"""
+function core_calculus!(s::CoreSpace, steps::Int = typemax(Int))
+    n = 0
+    with_write_permit(s) do
+        if isempty(s.prefix)
+            n = space_metta_calculus!(s.inner, steps)
+        else
+            error("core_calculus! on prefixed CoreSpace requires space_metta_calculus_in_prefix! in upstream MORK — Stage 2 work")
+        end
+    end
+    n
+end
+
+"""Like `core_calculus!` but anchored at an explicit thread-id `loc`
+(an `AbstractString`).  Uses MORK's `(exec (loc \$) \$ \$)` thread-scoping
+convention for finer-grained execution.
+
+For root-prefix spaces, this is the pre-Stage-1 behavior unchanged.
+For prefixed spaces, see `core_calculus!`'s note on the missing upstream
+primitive.
+"""
 core_calculus_at!(s::CoreSpace, loc::AbstractString, steps::Int = typemax(Int)) =
-    space_metta_calculus_at!(s.inner, loc, steps)
+    if isempty(s.prefix)
+        space_metta_calculus_at!(s.inner, loc, steps)
+    else
+        error("core_calculus_at! on prefixed CoreSpace requires upstream MORK Stage 2 primitives")
+    end

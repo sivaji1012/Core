@@ -606,15 +606,34 @@ function _eval_with_space(args::Vector, space::CoreSpace)
 end
 
 function _eval_bind!(args::Vector, space::CoreSpace)
-    # (bind! name expr) — CoreSpaces go into space.named_spaces (context-scoped)
+    # (bind! name expr) — Stage 1 semantics (canonical-aligned, with
+    # prefix-as-metadata for Stage 2 shared-trie evolution):
+    #
+    #   - If `val` is a CoreSpace AND `name` starts with `&`, register the
+    #     name → CoreSpace mapping AND record a derived byte-prefix in
+    #     PREFIX_REGISTRY as METADATA.  The CoreSpace keeps its own
+    #     independent MORK trie (canonical isolation — same as
+    #     hyperon-experimental / CeTTa / PeTTa do today).
+    #
+    #   - The prefix metadata is the architectural hook for Stage 2:
+    #     when shared-trie + byte-prefix isolation is wired up,
+    #     `rebind_to_shared_prefix` flips on and the existing prefix
+    #     machinery (PREFIX_REGISTRY, with_read/write_permit, prefix-aware
+    #     core_match/add) activates.  Stage 1 ships the architecture
+    #     dormant; Stage 2 flips the polarity by uncommenting one line.
+    #
+    #   - Otherwise (non-CoreSpace value), fall through to `(= name val)`
+    #     rule registration.
     length(args) < 2 && return nothing
     name = args[1]
     val  = eval_metta(args[2], space)
     if val isa CoreSpace && name isa Symbol
-        space.named_spaces[name] = val   # scoped to this context, not process-global
-    else
-        core_add!(space, [:(=), name, val])
+        derived = derive_prefix_from_name(name)
+        derived !== nothing && register_prefix!(name, derived)
+        space.named_spaces[name] = val
+        return val
     end
+    core_add!(space, [:(=), name, val])
     val
 end
 
