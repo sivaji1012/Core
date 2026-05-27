@@ -78,6 +78,12 @@ function eval_metta(@nospecialize(expr), space::CoreSpace = default_space()) :: 
     head === Symbol("with-space")   && return _eval_with_space(args, space)
     head === Symbol("add-atom")    && return _eval_add_atom(args, space)
     head === Symbol("remove-atom") && return _eval_remove_atom(args, space)
+    # ECAN bulk ops — Julia fast path for trie-wide STI/LTI updates.
+    # Pure-MeTTa equivalents in t1_core_logic.metta become unreachable once
+    # these special forms take dispatch precedence (head match happens before
+    # rule lookup).  See benchmark in packages/ECAN/examples/Stability.metta.
+    head === Symbol("decimate-importance!") && return _eval_decimate_importance!(args, space)
+    head === Symbol("normalize-attention!") && return _eval_normalize_attention!(args, space)
     # exec atoms — add to MORK space and run calculus (AUSink/CountSink/HeadSink)
     head === :exec                  && return _eval_exec_atom(expr, space)
     head === Symbol("get-atoms")   && return core_atoms(space)
@@ -212,11 +218,29 @@ end
 
 function _eval_exec_atom(expr::Vector, space::CoreSpace)
     # exec atoms use MORK's MM2 calculus (AUSink/CountSink/HeadSink).
-    # Add the exec atom to the MORK space and run space_metta_calculus!
-    # for a bounded number of steps.  Results are written back to the space
-    # as side effects — callers inspect the space for results.
-    core_add!(space, expr)
-    core_calculus!(space, 10_000)
+    # Results are written to the space as side effects; callers inspect afterward.
+    #
+    # When use_supercompiler=true (opt-in via enable_sc! or register_for_space!):
+    #   MorkSupercompiler.plan! applies Rule-of-64 source decomposition and
+    #   join-order reordering before running calculus.  Output contract is
+    #   identical (same trie mutation: space_add_all_sexpr! + space_metta_calculus!).
+    #   Approx pipeline is NOT engaged (plan! bypasses execute!/SCPipeline entirely).
+    #
+    #   SET semantics: safe by construction. flow_vars carries every variable the
+    #   final template needs through all intermediate _sc_tmp* atoms, so MORK
+    #   dedup of intermediates can only collapse bindings that produce the same
+    #   final result — no distinct result is ever dropped.
+    #
+    #   Multiplicity caveat: when two distinct binding paths produce the SAME final
+    #   atom, decomposed dedup collapses them earlier than the direct engine does.
+    #   CountSink workloads (WILLIAM.count, WILLIAM.dict-size) should verify
+    #   before opting in if they rely on duplicate-result counts being exact.
+    if space.use_supercompiler
+        MorkSupercompiler.plan!(space.inner, to_sexpr(expr), typemax(Int))
+    else
+        core_add!(space, expr)
+        core_calculus!(space, 10_000)
+    end
     nothing
 end
 
@@ -234,6 +258,98 @@ function _eval_remove_atom(args::Vector, space::CoreSpace)
     atom = eval_metta(args[2], sp)
     core_remove!(sp, atom)
     atom
+end
+
+# ── ECAN bulk operations (Julia fast path) ──────────────────────────────────
+#
+# These walk the MORK trie ONCE collecting AV atoms, then mutate in a single
+# pass.  Equivalent pure-MeTTa versions in t1_core_logic.metta are unreachable
+# (special-form dispatch wins) — they remain as documentation of the algorithm.
+#
+# Speedup vs pure-MeTTa: avoids per-atom MeTTa eval overhead inside the bulk
+# loop (rule lookup, binding allocation, _eval_let cascade).  Trie ops are
+# still remove-then-add per atom (MORK byte-trie can't mutate float bytes
+# in-place — value is part of the key path), but the per-atom JIT cost drops
+# by ~10x.  Sufficient to bring a 100-tick ECAN heartbeat from minutes to
+# sub-second at N=5-50 atoms.
+
+function _coerce_float(x::Any) :: Float64
+    x isa Number && return Float64(x)
+    if x isa String
+        n = tryparse(Float64, x)
+        n === nothing || return n
+    end
+    if x isa Symbol
+        n = tryparse(Float64, string(x))
+        n === nothing || return n
+    end
+    0.0
+end
+
+"""
+    (decimate-importance! factor) → True
+
+Multiply every AV atom's STI and LTI by (1 - factor).  VLTI preserved.
+Implements ECAN's decay step; called from t1_ECAN_Policies.metta via
+`(= (apply-decay!) (decimate-importance! (ecan-decay-factor)))`.
+"""
+function _eval_decimate_importance!(args::Vector, space::CoreSpace)
+    length(args) < 1 && return :True
+    factor = _coerce_float(eval_metta(args[1], space))
+    retention = 1.0 - factor
+
+    # One trie scan for all AV atoms.
+    av_pattern = [Symbol("AV"), Symbol("\$id"), Symbol("\$sti"), Symbol("\$lti"), Symbol("\$vlti")]
+    avs = core_match(space, av_pattern)
+
+    for av in avs
+        if av isa Vector && length(av) == 5 && av[1] === :AV
+            id   = av[2]
+            sti  = _coerce_float(av[3])
+            lti  = _coerce_float(av[4])
+            vlti = av[5]
+            core_remove!(space, av)
+            core_add!(space, [Symbol("AV"), id, sti * retention, lti * retention, vlti])
+        end
+    end
+    :True
+end
+
+"""
+    (normalize-attention! target) → True
+
+Scale every AV atom's STI so the population sum equals `target`.  LTI and
+VLTI preserved.  No-op if current sum is below ε (avoids division by zero).
+"""
+function _eval_normalize_attention!(args::Vector, space::CoreSpace)
+    length(args) < 1 && return :True
+    target = _coerce_float(eval_metta(args[1], space))
+
+    av_pattern = [Symbol("AV"), Symbol("\$id"), Symbol("\$sti"), Symbol("\$lti"), Symbol("\$vlti")]
+    avs = core_match(space, av_pattern)
+
+    total = 0.0
+    valid_avs = Tuple{Any, Float64, Float64, Any}[]
+    for av in avs
+        if av isa Vector && length(av) == 5 && av[1] === :AV
+            id   = av[2]
+            sti  = _coerce_float(av[3])
+            lti  = _coerce_float(av[4])
+            vlti = av[5]
+            push!(valid_avs, (id, sti, lti, vlti))
+            total += sti
+        end
+    end
+
+    total < 1.0e-6 && return :True
+    scale = target / total
+
+    for (id, sti, lti, vlti) in valid_avs
+        old_av = [Symbol("AV"), id, sti, lti, vlti]
+        core_remove!(space, old_av)
+        core_add!(space, [Symbol("AV"), id, sti * scale, lti, vlti])
+    end
+    :True
 end
 
 # ── Unification helpers ───────────────────────────────────────────────────────
@@ -416,16 +532,29 @@ const _METTA_PACKAGES_DIR = joinpath(homedir(), ".metta", "packages")
 # Core/lib/ — algorithm libraries, mirrors PeTTa/lib/
 const _CORE_LIB_DIR = joinpath(@__DIR__, "..", "..", "lib")
 
-"""Return the local path for a `(library pkg file)` import expression, or nothing."""
+"""Return the local path for a `(library pkg file)` import expression, or nothing.
+
+Resolution order (directory form preferred so multi-file libraries can name
+their entry point conventionally):
+
+  (library name)            tries  Core/lib/name/name.metta
+                                   Core/lib/name/loader.metta
+                                   Core/lib/name.metta
+                                   <package registry> ...
+  (library pkg file)        tries  Core/lib/pkg/file.metta
+                                   Core/lib/file.metta
+                                   <package registry> ...
+"""
 function _resolve_library(expr) :: Union{String, Nothing}
-    # (library pkg file) → ~/.metta/packages/pkg/file.metta
-    # (library file)     → ~/.metta/packages/file/file.metta  OR  ~/.metta/lib/file.metta
     if expr isa Vector && !isempty(expr) && expr[1] === Symbol("library")
         parts = expr[2:end]
         if length(parts) == 2
             pkg  = string(parts[1])
             file = string(parts[2])
-            # 1. Core/lib/file.metta  (canonical local lib, mirrors PeTTa/lib/)
+            # 1a. Core/lib/pkg/file.metta  (directory layout)
+            p = joinpath(_CORE_LIB_DIR, pkg, file * ".metta")
+            isfile(p) && return p
+            # 1b. Core/lib/file.metta  (flat layout, back-compat)
             p = joinpath(_CORE_LIB_DIR, file * ".metta")
             isfile(p) && return p
             # 2. Registered via git-import!
@@ -438,7 +567,13 @@ function _resolve_library(expr) :: Union{String, Nothing}
             isfile(p) && return p
         elseif length(parts) == 1
             name = string(parts[1])
-            # 1. Core/lib/name.metta
+            # 1a. Core/lib/name/name.metta  (directory canonical entry)
+            p = joinpath(_CORE_LIB_DIR, name, name * ".metta")
+            isfile(p) && return p
+            # 1b. Core/lib/name/loader.metta  (directory loader form)
+            p = joinpath(_CORE_LIB_DIR, name, "loader.metta")
+            isfile(p) && return p
+            # 1c. Core/lib/name.metta  (flat, back-compat — WILLIAM/MetaMo shape)
             p = joinpath(_CORE_LIB_DIR, name * ".metta")
             isfile(p) && return p
             # 2. Registered package

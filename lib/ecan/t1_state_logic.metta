@@ -1,0 +1,140 @@
+;; t1_state_logic.metta
+;; ECAN State: Attentional Focus Management + Tick Counters
+;; Reference: iCog-Labs metta-attention/attention-bank/bank/attentional-focus/
+;;
+;; Atom structures:
+;;   (InAF $id)           — marks atom as currently in Attentional Focus
+;;   (MinAFSTI $sti)      — tracks minimum STI among AF members
+;;   (ECATick $n)         — current governance tick counter
+;;   (AttentionScanLastTick $n)  — last tick an entropy scan ran
+
+;; -------------------------------------------------------
+;; 1. Attentional Focus Membership
+;; -------------------------------------------------------
+
+(= (get-af-atoms)
+   (collapse (match &self (InAF $id) $id)))
+
+;; `length` is not in Core's stdlib — use the canonical `size-atom` instead.
+(= (af-size)
+   (let $atoms (get-af-atoms)
+        (if (== $atoms ()) 0 (size-atom $atoms))))
+
+(= (is-in-af? $id)
+   (let $result (collapse (match &self (InAF $id) True))
+        (if (== $result ()) False True)))
+
+;; -------------------------------------------------------
+;; 2. Minimum AF STI Tracking
+;; -------------------------------------------------------
+
+(= (get-min-af-sti)
+   (let $result (collapse (match &self (MinAFSTI $s) $s))
+        (if (== $result ()) 0.0 (car-atom $result))))
+
+;; Core-interpreter workaround (same family as set-av! in t1_core_logic):
+;; collapse+match with atom-template doesn't wrap single results, so we use
+;; the match result directly rather than via collapse+car-atom.
+(= (set-min-af-sti! $sti)
+   (let $old (match &self (MinAFSTI $s) (MinAFSTI $s))
+        (let $_ (if (== $old ()) () (remove-atom &self $old))
+             (add-atom &self (MinAFSTI $sti)))))
+
+;; Recompute minimum STI across all AF members.
+;; lambda → canonical 5-arg foldl-atom syntax for Core compatibility.
+(= (update-min-af-sti!)
+   (let $af-stis (collapse (match &self (InAF $id)
+                                  (get-sti $id)))
+        (if (== $af-stis ())
+            (set-min-af-sti! 0.0)
+            (set-min-af-sti! (foldl-atom $af-stis 1.0 $acc $v
+                               (if (< $v $acc) $v $acc))))))
+
+;; Find the AF atom with the lowest STI (lambda → 5-arg syntax).
+(= (get-min-af-atom)
+   (let $af (get-af-atoms)
+        (if (== $af ())
+            ()
+            (foldl-atom (cdr-atom $af) (car-atom $af) $best $id
+              (if (< (get-sti $id) (get-sti $best)) $id $best)))))
+
+;; -------------------------------------------------------
+;; 3. Attentional Focus Update (Priority Queue Logic)
+;; Reference: updateAf() in attentional-focus.metta
+;;
+;; If atom is already in AF → update STI only (membership unchanged).
+;; If AF has space → add atom.
+;; If AF is full AND new STI > min AF STI → evict min, add new.
+;; -------------------------------------------------------
+
+(= (update-af! $id $new-sti)
+   (if (is-in-af? $id)
+       True
+       (if (< (af-size) (max-af-size))
+           (let $_ (add-atom &self (InAF $id))
+                (update-min-af-sti!))
+           (if (> $new-sti (get-min-af-sti))
+               (let $evicted (get-min-af-atom)
+                    (let $_ (remove-atom &self (InAF $evicted))
+                         (let $_ (add-atom &self (InAF $id))
+                              (update-min-af-sti!))))
+               False))))
+
+(= (remove-from-af! $id)
+   (let $_ (remove-atom &self (InAF $id))
+        (update-min-af-sti!)))
+
+;; -------------------------------------------------------
+;; 4. Random AF Atom Selection (for stochastic diffusion)
+;; Reference: getRandomAtomInAF / getRandomAtomNotInAF
+;; -------------------------------------------------------
+
+;; Stochastic AF atom selection.  The PRIMUS_Core version used random-int
+;; which may not be registered in Core; the foldl just returned the last
+;; element anyway (not actually random — bug in the original).  Port keeps
+;; the behaviour but in 5-arg syntax; the function returns the last AF atom.
+;; TODO Phase 1b: register random-int as a Julia primitive and re-introduce
+;;       true stochastic selection.
+(= (get-random-atom-in-af)
+   (let $atoms (get-af-atoms)
+        (if (== $atoms ())
+            ()
+            (foldl-atom $atoms () $_ $id $id))))
+
+;; -------------------------------------------------------
+;; 5. Tick Counter
+;; -------------------------------------------------------
+
+(= (get-ecan-tick)
+   (let $result (collapse (match &self (ECATick $n) $n))
+        (if (== $result ()) 0 (car-atom $result))))
+
+(= (increment-ecan-tick!)
+   (let $old (match &self (ECATick $n) (ECATick $n))
+        (let $n (get-ecan-tick)
+             (let $_ (if (== $old ()) () (remove-atom &self $old))
+                  (add-atom &self (ECATick (+ $n 1)))))))
+
+;; -------------------------------------------------------
+;; 6. Entropy Scan Gate (rate-limits adaptive_attention.metta scans)
+;; -------------------------------------------------------
+
+(= (get-attention-scan-tick)
+   (let $result (collapse (match &self (AttentionScanLastTick $n) $n))
+        (if (== $result ()) -1000 (car-atom $result))))
+
+(= (set-attention-scan-tick! $n)
+   (let $old (match &self (AttentionScanLastTick $t) (AttentionScanLastTick $t))
+        (let $_ (if (== $old ()) () (remove-atom &self $old))
+             (add-atom &self (AttentionScanLastTick $n)))))
+
+;; Default scan interval — Phase 1c (adaptive_attention.metta) may override
+;; this rule and add policy-cooldown / live-rewriting.  For Phase 1a/b, the
+;; constant is enough to make scan-due? answerable.
+(= (attention-scan-interval) 50)
+
+(= (scan-due?)
+   (let* (($now  (get-ecan-tick))
+          ($last (get-attention-scan-tick))
+          ($interval (attention-scan-interval)))
+     (>= (- $now $last) $interval)))

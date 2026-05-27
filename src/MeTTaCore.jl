@@ -38,6 +38,7 @@ using MORK: Space, new_space,
             # Per-prefix permits — StatusMap lives in MORK's server layer
             StatusMap, sm_get_read_permission, sm_release_read!,
             sm_get_write_permission, sm_release_write!
+using MorkSupercompiler: plan!
 using PathMap: PathMap, UnitVal, UNIT_VAL,
                read_zipper_at_path, zipper_to_next_val!, zipper_path,
                set_val_at!, remove_val_at!,
@@ -133,7 +134,7 @@ Usage:
     register_for_space!(s)                          # default: raw MORK calculus
     register_for_space!(s; use_supercompiler=true)  # Rule-of-64 decomposition
     load_stdlib!(s)
-    run_metta("!(import! &self (library lib_william))", s)
+    run_metta("!(import! &self (library william))", s)
 """
 function register_for_space!(space::CoreSpace; use_supercompiler::Bool = false)
     use_supercompiler && enable_sc!(space)

@@ -1,7 +1,7 @@
 ;;;; AntiUnification.metta — Example: LGG and NCD via MORK AUSink
 ;;;; Tests: W5 (NCD similarity), LGG correctness
 
-!(import! &self "../lib_william.metta")
+!(import! &self (library william))
 
 ; Add some structured data
 !(add-atom &self (likes alice pizza))

@@ -3,7 +3,7 @@
 # Converts MeTTa source strings to Julia nested arrays
 # Example: "(+ 1 2)" → [:+, 1, 2]
 
-export parse_metta, parse_sexpr, metta_string
+export parse_metta, parse_sexpr, metta_string, @metta_str
 
 # ============================================================================
 # Tokenizer
@@ -195,3 +195,20 @@ function metta_string(x) :: String
     x isa String  && return "\"$x\""
     string(x)
 end
+
+"""
+    metta"..."  →  String
+
+Non-interpolating MeTTa source literal.  MeTTa's `\$x` variable syntax
+collides with Julia's string interpolation, so MeTTa source embedded in
+Julia code must use this macro (or `raw"..."`) to survive verbatim:
+
+    program = metta\"\"\"
+    (exec 0 (, (A \$x \$y) (B \$y \$z)) (, (Result \$x \$z)))
+    \"\"\"
+
+Equivalent to `raw"..."` — exists so MeTTa-bearing strings are
+self-documenting at the call site.  Use everywhere MeTTa source is
+embedded in Julia (tests, REPL helpers, generated programs).
+"""
+macro metta_str(s); s; end

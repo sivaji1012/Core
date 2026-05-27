@@ -1,7 +1,7 @@
 ;;;; PatternMining.metta — Example: basic pattern discovery
 ;;;; Tests: W1 (gain threshold), W6 (support ranking), W7 (heavy-hitters)
 
-!(import! &self "../lib_william.metta")
+!(import! &self (library william))
 
 ; Populate a knowledge base
 !(add-atom &self (edge robin bird))

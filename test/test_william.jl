@@ -5,7 +5,7 @@ println("Initialising space...")
 S = new_core_space()
 ef = e -> to_sexpr(eval_metta(from_sexpr(e), S))
 register_core_primitives!(); _register_atom_ops!(ef); load_stdlib!(S)
-run_metta("!(import! &self (library lib_william))", S)
+run_metta("!(import! &self (library william))", S)
 println("Space ready ($(length(core_atoms(S))) atoms)\n")
 
 q(e) = run_metta(e, S)   # query against shared space

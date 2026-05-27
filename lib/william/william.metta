@@ -1,4 +1,4 @@
-;;;; lib_william.metta
+;;;; william.metta
 ;;;; Adaptive Compression and Discovery Service — WILLIAM on MORK
 ;;;;
 ;;;; Implementation of WILLIAM (Weighted Incremental Learning and Language-
@@ -25,8 +25,8 @@
 ;;;;   (= (WILLIAM.Config.TopK)       10)    ; default k for heavy-hitters
 ;;;;
 ;;;; Import:
-;;;;   !(import! &self (library lib_william))    ; PeTTa / MeTTaCore style
-;;;;   !(import! &self "./lib_william.metta")    ; relative path style
+;;;;   !(import! &self (library william))    ; PeTTa / MeTTaCore style
+;;;;   !(import! &self "./william.metta")    ; relative path style
 
 ;;; ===========================================================================
 ;;; §0 — Configuration (overridable defaults per Hyperon WP §5.12)

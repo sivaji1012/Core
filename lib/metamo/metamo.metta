@@ -1,4 +1,4 @@
-;;;; lib_metamo.metta
+;;;; metamo.metta
 ;;;; MetaMo — MetaMotivational Framework on Core/MORK
 ;;;;
 ;;;; Implements equation #9 from:
@@ -27,7 +27,7 @@
 ;;;;   MetaMo.stats   $space                         → summary
 ;;;;
 ;;;; Import:
-;;;;   !(import! &self (library lib_metamo))
+;;;;   !(import! &self (library metamo))
 
 ;;; ===========================================================================
 ;;; §1 — Configuration (overridable)

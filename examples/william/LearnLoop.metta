@@ -2,7 +2,7 @@
 ;;;; Tests: W3 (incremental learning), W4 (prediction), W8 (validation)
 ;;;; Ref: Franz 2019 §2, Hyperon WP §5.12
 
-!(import! &self "../lib_william.metta")
+!(import! &self (library william))
 
 ; Start with an empty learning space (separate from &self)
 !(bind! &learn-space (new-space))

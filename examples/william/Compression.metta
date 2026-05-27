@@ -1,7 +1,7 @@
 ;;;; Compression.metta — Example: MDL scoring and weakness integration
 ;;;; Tests: W2 (MDL objective), W2 weakness bijection (WP §5.1)
 
-!(import! &self "../lib_william.metta")
+!(import! &self (library william))
 
 ; Build a repetitive dataset — repeated patterns = high compression gain
 !(add-atom &self (event click button-a))
