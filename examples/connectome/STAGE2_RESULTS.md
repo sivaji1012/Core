@@ -71,6 +71,39 @@ position is bound); the real fixes are (a) a trie-narrowing structural `match`
 primitive in MORK, or (b) reformulating the per-step aggregation as a forward
 push through `SumSink`/`CountSink` over the exec calculus.
 
+## Multi-space (App + Common) — the substrate-validation payoff
+
+The reason this workload exists: validate the **multi-space substrate**, not just
+the model. [InfoFlowMS.metta](InfoFlowMS.metta) is the App+Common variant
+(Whitepaper §9) — the connectome lives **once** in a shared `&common` space, and
+each modality's traversal state (`reached`/`rank`) lives in its **own** space,
+threaded as the `$ss` argument. The helpers read the connectome from `&common`
+and read/write state from `$ss`, so modalities run over one shared wiring without
+cross-contaminating.
+
+Real-data run — **thermosensory + hygrosensory**, K=1, over a single shared
+`&common` connectome (union of both subgraphs, 2,802 edges, loaded once):
+
+| Modality | State space | MeTTa rank-1 | Oracle | Diff |
+|---|---|---:|---:|---|
+| thermosensory | `&therm` | **46** | 46 | **0** |
+| hygrosensory  | `&hygro` | **52** | 52 | **0** |
+
+(~79 s for both.) Each modality reproduces its *standalone* oracle **exactly even
+while sharing the connectome** — which is the strongest isolation proof available:
+any state bleed from the other modality would have added extra rank-1 nodes
+(there were none). The two reach **largely distinct** neuron sets — only **3 of
+46/52 overlap** — the per-modality divergence (Fig 6d/e) that the isolated state
+spaces make directly comparable.
+
+Mechanism notes: `bind! &name (new-space)` currently gives each named space its
+**own MORK trie** (canonical isolation, as hyperon-experimental/CeTTa/PeTTa do);
+cross-space reads resolve via `_resolve_space`. The byte-prefix-regions-in-one-
+trie optimization (the dormant `rebind_to_shared_prefix` "polarity flip" in
+`_eval_bind!`) is the substrate-novel follow-up — it would store all regions in
+one shared trie and is validated at the MORK/PathMap level already (70/70,
+1650/1650), but is **not** required for the App+Common semantics shown here.
+
 ## Reproduce
 
 ```bash
