@@ -413,6 +413,30 @@ end
     @test [:fact, 2] ∈ core_atoms(s)
 end
 
+@testset "32. Prefix-narrowed core_match (== full-walk, but O(subtrie))" begin
+    using MeTTaCore: core_match
+    s = new_core_space()
+    core_add!(s, [:in, :p, :a, 5])
+    core_add!(s, [:in, :p, :b, 3])
+    core_add!(s, [:in, :q, :c, 7])
+    core_add!(s, [:other, :p, :z, 1])
+    # functor + bound 2nd arg pinned → only the two (in p ..) atoms
+    got = core_match(s, [:in, :p, Symbol("\$r"), Symbol("\$w")])
+    @test length(got) == 2
+    @test all(a -> a isa Vector && a[1] === :in && a[2] === :p, got)
+    # functor-only (2nd arg is a var) → full-walk fallback → all three (in ..)
+    @test length(core_match(s, [:in, Symbol("\$x"), Symbol("\$r"), Symbol("\$w")])) == 3
+    # integer-id bound arg (the real-connectome case) narrows correctly
+    s2 = new_core_space()
+    core_add!(s2, [:in, 720575940612305506, :a, 7])
+    core_add!(s2, [:in, 720575940612305507, :b, 9])
+    one = core_match(s2, [:in, 720575940612305506, Symbol("\$r"), Symbol("\$w")])
+    @test length(one) == 1 && one[1][2] == 720575940612305506
+    # narrowed result is exactly the full-walk result (correctness, not just count)
+    @test Set(string.(got)) == Set(string.(filter(a -> a isa Vector && a[1] === :in && a[2] === :p,
+                                                   core_atoms(s))))
+end
+
 end # testset "Core MeTTa Compatibility Suite"
 
 println("\n✓ Core package tests passed.")

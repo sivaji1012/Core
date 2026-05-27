@@ -496,12 +496,65 @@ which returns the pattern itself without iterating (see `_walk_atoms`
 docstring).  Cost is O(N) in trie size with a cheap shape rejection — the
 proper structural-trie-matching primitive in MORK is a future optimization.
 """
+# ── Prefix-narrowed query ─────────────────────────────────────────────────────
+# A stored atom's trie path is [ExprArity(n)][ExprSymbol item]… — exactly the
+# encoding core_add!/sexpr_to_expr produce.  When a pattern has a concrete
+# functor PLUS one or more concrete leading args (variables only later), those
+# leading items form a genuine byte-prefix of every atom that could match it.
+# Descending the trie to that prefix and walking only the resulting subtrie
+# turns the O(N) full scan into O(subtrie).  This is what makes a by-key query
+# (e.g. reverse-keyed `(in <post> $pre $cnt)`) cheap at connectome scale.
+# Patterns that start with a variable, or pin only the functor (e.g.
+# `(syn $r $p $c)` — every atom is `syn`), yield `nothing` → full-walk fallback.
+
+_concrete_token(el::Integer)       = string(el)
+_concrete_token(el::AbstractFloat) = string(el)
+function _concrete_token(el::Symbol)
+    str = string(el)
+    (startswith(str, "\$") || startswith(str, "__var_")) ? nothing : str
+end
+_concrete_token(::Any) = nothing   # nested expr / variable / other → stop pinning
+
+function _pattern_prefix_bytes(pattern)
+    (pattern isa Vector && length(pattern) >= 2) || return nothing
+    bytes  = UInt8[item_byte(ExprArity(UInt8(length(pattern))))]
+    pinned = 0
+    for el in pattern
+        tok = _concrete_token(el)
+        tok === nothing && break
+        tb = Vector{UInt8}(tok)
+        length(tb) > 63 && break          # multi-byte symbol size — stop pinning here
+        push!(bytes, item_byte(ExprSymbol(UInt8(length(tb)))))
+        append!(bytes, tb)
+        pinned += 1
+    end
+    # Worth narrowing only if at least one ARG beyond the functor is pinned.
+    pinned >= 2 ? bytes : nothing
+end
+
+function _walk_atoms_narrowed(f::Function, s::CoreSpace, prefix_bytes::Vector{UInt8})
+    rz = read_zipper_at_path(s.inner.btm, vcat(s.prefix, prefix_bytes))
+    while zipper_to_next_val!(rz)
+        full = vcat(prefix_bytes, collect(zipper_path(rz)))   # full atom bytes (no region prefix)
+        try
+            f(from_sexpr(strip(expr_serialize(full))))
+        catch; end
+    end
+end
+
 function core_match(s::CoreSpace, pattern::Any) :: Vector{Any}
     pattern === nothing && return Any[]
     results = Any[]
+    prefix  = _pattern_prefix_bytes(pattern)
     with_read_permit(s) do
-        _walk_atoms(s) do atom
-            _shape_match(pattern, atom) && push!(results, atom)
+        if prefix === nothing
+            _walk_atoms(s) do atom               # full scan — no concrete prefix to pin
+                _shape_match(pattern, atom) && push!(results, atom)
+            end
+        else
+            _walk_atoms_narrowed(s, prefix) do atom   # O(subtrie) — descend to the pinned prefix
+                _shape_match(pattern, atom) && push!(results, atom)
+            end
         end
     end
     results
