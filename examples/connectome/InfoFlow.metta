@@ -84,7 +84,12 @@
 ;; threshold keeps each modality on its dominant path (olfactory: c1→c3→c5;
 ;; visual: c2→c4), excluding the other's weak cross-pathway.
 ;;
-;; Stage 2 keeps this exact model and replaces the synthetic (syn ...) block
-;; with FAFB v783 `connections_princeton.csv` via space_load_csv!, and seeds
-;; from `classification.csv` (flow=afferent, by `class` modality).  See
-;; docs/CONNECTOME_MULTISPACE.md + docs/specs/flywire_connectome_spec.md §7/§11.
+;; Stage 2 (DONE) keeps this exact model and replaces the synthetic (syn ...)
+;; block with REAL FAFB v783 edges, seeding from `classification.csv`
+;; (flow=afferent, by `class` modality).  The unchanged model reproduced a
+;; native reference oracle node-for-node on real data — thermosensory K=1
+;; (46 rank-1) and K=2 (46/45, iterate-to-fixed-point), 0 diff.  Extraction +
+;; oracle: extract_fafb_subset.sh.  Full results + the substrate bug it found
+;; (collapse-of-single-expression-result) + the O(N)-match tractability
+;; boundary: STAGE2_RESULTS.md.  Background: docs/CONNECTOME_MULTISPACE.md +
+;; docs/specs/flywire_connectome_spec.md §7/§11.

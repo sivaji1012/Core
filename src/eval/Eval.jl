@@ -168,21 +168,32 @@ end
 
 # ── Special form implementations ──────────────────────────────────────────────
 
-function _eval_match(args::Vector, space::CoreSpace)
-    length(args) < 2 && return nothing
-    sp_arg   = args[1]
+# Gather ALL match results as a Vector{Any}, with NO single-result unwrap.
+# This is the faithful nondeterministic-stream form: a stream of one result
+# that is itself an expression (e.g. a tuple `($r $c)`) stays a 1-element
+# stream `[(r c)]` instead of being mistaken for the stream `[r, c]`.
+# `collapse` consumes this directly; `_eval_match` adds the convenience unwrap.
+function _eval_match_all(args::Vector, space::CoreSpace) :: Vector{Any}
+    length(args) < 2 && return Any[]
     pattern  = args[2]
     template = length(args) >= 3 ? args[3] : pattern
-    s = _resolve_space(sp_arg, space)
-    candidates = core_match(s, pattern)
+    s = _resolve_space(args[1], space)
     results = Any[]
-    for cand in candidates
+    for cand in core_match(s, pattern)
         b = _unify(pattern, cand)
         b === nothing && continue
         # MeTTa spec: match returns the substituted template as DATA, not evaluated.
         # Evaluating the template would execute rule atoms matched by wildcards.
         push!(results, _apply_bindings(template, b))
     end
+    results
+end
+
+function _eval_match(args::Vector, space::CoreSpace)
+    length(args) < 2 && return nothing
+    results = _eval_match_all(args, space)
+    # Convenience unwrap for non-collapse callers: a lone result is returned
+    # bare so `(let $x (match ...) ...)` etc. see a value, not a 1-list.
     isempty(results) ? [] : (length(results) == 1 ? results[1] : results)
 end
 
@@ -206,7 +217,16 @@ end
 
 function _eval_collapse(args::Vector, space::CoreSpace)
     isempty(args) && return []
-    result = eval_metta(args[1], space)
+    inner = args[1]
+    # Gather nondeterministic results WITHOUT match's single-result unwrap, so a
+    # lone result that is itself an expression (e.g. a `($r $c)` tuple) stays one
+    # element instead of being mistaken for the results list (the field values).
+    if inner isa Vector && !isempty(inner)
+        h = inner[1]
+        (h === :match || h === Symbol("match")) && return _eval_match_all(inner[2:end], space)
+        h === :superpose && return _eval_superpose(inner[2:end], space)
+    end
+    result = eval_metta(inner, space)
     result isa Vector ? result : [result]
 end
 

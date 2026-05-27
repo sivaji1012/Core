@@ -228,6 +228,22 @@ end
     @test r !== nothing
     r2 = eval_metta([:collapse, [:superpose, [:A, :B, :C]]], s)
     @test occursin("A", string(r2))
+
+    # Regression: collapse of a SINGLE match result that is itself an expression
+    # (a tuple) must stay a 1-element list, not be flattened into its fields.
+    # (Caught by the FAFB connectome info-flow model: a node with one in-edge
+    #  had `reached-in` = 0 because (collapse (match … ($r $c))) → (r c) was read
+    #  as two results instead of one pair.)
+    s2 = fresh()
+    core_add!(s2, [:edge, :p, :q, 7])
+    one = eval_metta([:collapse, [:match, Symbol("&self"),
+                       [:edge, Symbol("\$a"), Symbol("\$b"), Symbol("\$w")],
+                       [Symbol("\$a"), Symbol("\$w")]]], s2)
+    @test one isa Vector && length(one) == 1          # one result, not two
+    @test eval_metta([Symbol("size-atom"), one], s2) ∈ [1, "1"]
+    # the lone result is the intact pair (p 7)
+    @test eval_metta([Symbol("car-atom"), one], s2) == [:p, 7] ||
+          occursin("p", string(eval_metta([Symbol("car-atom"), one], s2)))
 end
 
 # ─────────────────────────────────────────────────────────────────────────────
