@@ -146,6 +146,59 @@ The interpreter `InfoFlow.metta` / `InfoFlowFast.metta` / `InfoFlowMS.metta`
 remain as small-scale **oracle reference** + multi-space demonstration; the
 scalable production path is `info_flow_zipper.jl`.
 
+## All-7-modalities on mmap'd `.act` — load once, query forever (2026-05-28)
+
+[info_flow_all_modalities.jl](info_flow_all_modalities.jl) closes the loop:
+load the FAFB connectome once, snapshot to a 41.7 MB `.act` file, then
+**every subsequent run cold-mmap-opens in 0.25 ms with zero RAM trie**, runs
+all 7 afferent modalities to fixed point on the full real graph, and emits the
+Fig-6 d/e analog (per-modality rank distributions + cross-modality Jaccard).
+
+Substrate enabler: **one-line adapter in Julia PathMap**
+([`read_zipper_at_path(::ArenaCompactTree, path)`](../../../PathMap/src/pathmap/ArenaCompact.jl)
+dispatches to `act_read_zipper_at_path`, PathMap commit `98ae99c`). Everything
+else — the `zipper_*` API polymorphism on `ACTZipper` (Zipper.jl-style methods
+in ArenaCompact.jl lines 835-854), `.act` save/load, `act_open_mmap` true
+lazy mmap (PathMap `0805cff`) — was already in place. The same driver code
+runs against either an in-RAM PathMap or a mmap'd ACT trie, transparently.
+
+Measured (3.73M-edge FAFB v783, one workstation):
+
+| Phase | Time | Notes |
+|---|---|---|
+| First-run text-load | 125.7 s | one-time cost; 3.73M `(syn pre post cnt)` atoms |
+| Snapshot to `.act` | 35.5 s | 41.7 MB on disk — **113× smaller than the 4.7 GB in-RAM trie** |
+| Drop in-RAM PathMap + cold mmap-open | **0.25 ms** | RSS drops 4.7 GB → 515 MB (just the Julia runtime, no trie) |
+| `tin` (Σsyn per post, on mmap'd ACT) | 7.1 s | 130,183 distinct posts |
+| **All 7 modality flows** (max_rounds=15) | **~14 s** | thermosensory 0.03s / hygrosensory 0.02s / gustatory 0.33s / olfactory 1.45s / mechanosensory 1.33s / AN 3.16s / **visual 7.44s** |
+
+After the first run, every iteration of this analysis is **~21 s total** (mmap
++ tin + all flows). The 4.7 GB in-RAM trie is gone; the data lives on disk as
+a 42 MB file and queries page in only the touched subtries.
+
+**Cross-modality Jaccard overlap of reach sets** (Fig 6 d analog):
+
+| | therm | hygro | gust | olf | AN | mech | vis |
+|---|---|---|---|---|---|---|---|
+| thermosensory | 1.000 | 0.098 | 0.000 | 0.015 | 0.004 | 0.003 | 0.001 |
+| hygrosensory | 0.098 | 1.000 | 0.002 | 0.009 | 0.001 | 0.001 | 0.000 |
+| gustatory | 0.000 | 0.002 | 1.000 | 0.066 | 0.078 | **0.169** | 0.011 |
+| olfactory | 0.015 | 0.009 | 0.066 | 1.000 | **0.276** | 0.137 | 0.093 |
+| AN | 0.004 | 0.001 | 0.078 | 0.276 | 1.000 | **0.414** | 0.293 |
+| mechanosensory | 0.003 | 0.001 | 0.169 | 0.137 | 0.414 | 1.000 | 0.117 |
+| visual | 0.001 | 0.000 | 0.011 | 0.093 | 0.293 | 0.117 | 1.000 |
+
+AN ↔ mechanosensory share the largest pair-wise reach (0.414); visual,
+thermo, and hygro are the most-isolated modalities. Each modality reaches a
+distinct subset that the deterministic 0.3-threshold flow makes comparable
+across afferent classes — matching the small-world-but-modality-specific
+finding of Lappalainen et al. 2024 Fig 6.
+
+The full `(modality, neuron, rank)` triple set (211,988 rows) is written to
+`/tmp/all_modalities_ranks.tsv` for downstream UMAP / clustering analyses
+(Fig 6 c — UMAP of per-neuron rank vectors — is a post-processing step
+outside this substrate-side driver).
+
 ## Reproduce
 
 ```bash
