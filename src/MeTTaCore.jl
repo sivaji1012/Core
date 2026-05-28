@@ -44,12 +44,25 @@ using PathMap: PathMap, UnitVal, UNIT_VAL,
                set_val_at!, remove_val_at!,
                act_from_zipper, act_save, ArenaCompactTree
 
+# WILLIAM (Adaptive Compression and Discovery Service) — Pattern B1 Pkg dep.
+# Its `__init__` registers the `WILLIAM.mine-patterns` grounded primitive into
+# MORK.GROUNDED_REGISTRY at module load; the `(library william)` resolver
+# entry is installed below after _PACKAGE_REGISTRY is in scope (Eval.jl).
+using AdaptiveCompression
+
 include("space/CoreSpace.jl")
 include("space/CoreSpaceActIO.jl")   # Stage 1 .act lifecycle (snapshot / load / open_node! / close_node!)
 include("parser/Parser.jl")
 include("primitives/Primitives.jl")
 include("primitives/AtomOps.jl")
 include("eval/Eval.jl")
+
+# Point `(library william)` resolution at the AdaptiveCompression package dir.
+# `_resolve_library` already has step-2 fallback to `_PACKAGE_REGISTRY[name]`;
+# we just need to install the entry.  The actual `.metta` lives at
+# `pkgdir(AdaptiveCompression)/william.metta` (matches AdaptiveCompression's
+# repo layout: william.metta at package root, examples/ alongside).
+_PACKAGE_REGISTRY["william"] = pkgdir(AdaptiveCompression)
 
 # stdlib directory relative to this package root
 const _STDLIB_DIR = joinpath(@__DIR__, "..", "stdlib")
