@@ -439,4 +439,13 @@ end
 
 end # testset "Core MeTTa Compatibility Suite"
 
-println("\n✓ Core package tests passed.")
+println("\n✓ Core MeTTa Compatibility Suite tests passed.")
+
+# WILLIAM algorithm tests — pulled in from the adaptive-compression submodule
+# at lib/william/.  Top-level @testset inside; failures throw at its close.
+# Two known pre-existing failures as of submodule pin 53a8622:
+#   - W8 Validate (1 of 2 assertions)
+#   - WP§7.2 i-surprisingness > 0
+# Fix these by editing the .metta in the submodule (sivaji1012/adaptive-compression),
+# pushing, then bumping the submodule pin in Core.
+include("test_william.jl")
