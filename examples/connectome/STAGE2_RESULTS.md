@@ -56,20 +56,25 @@ full results vector, no single-result unwrap); `collapse` over `match`/`superpos
 now uses it, so a lone expression-valued result stays a 1-element stream.
 Regression test added (`runtests.jl` testset 19); **119/119 pass**.
 
-## Tractability boundary (→ Stage 3)
+## Tractability boundary (→ Stage 3) — corrected 2026-05-28
 
-`core_match` is an **O(N) full trie-walk** with a shape pre-filter — it does not
-narrow on a bound argument position (CoreSpace.jl flags the structural-trie-match
-primitive as future work). The backward-scan model therefore costs
-**O(candidates × total_atoms) per step**: ~1.2 k edges ran in ~80 s, ~3 k edges
-in ~380 s. The full central-brain graph (tens of thousands of edges) or the whole
-FAFB (3.73 M) is the **Stage-3 perf stress test**, and is the concrete workload
-that triggers the deferred *structural-match / constant-factor* item in
-`docs/specs/MORK_PATHMAP_SUBSTRATE_LEDGER.md`. Two scaling paths:
-reverse-keying alone does **not** help (Core walks all atoms regardless of which
-position is bound); the real fixes are (a) a trie-narrowing structural `match`
-primitive in MORK, or (b) reformulating the per-step aggregation as a forward
-push through `SumSink`/`CountSink` over the exec calculus.
+`core_match` is an **O(N) full trie-walk** with a shape pre-filter, so this
+interpreter-level model costs **O(candidates × total_atoms) per step**:
+~1.2 k edges ran in ~80 s, ~3 k edges in ~380 s. **However**: this is a property
+of the INTERPRETER abstraction, not a substrate gap. The actual long-term scaling
+path is NOT to scale the interpreter further — it is to drop to **direct zipper
+algebra on PathMap**, mirroring upstream MORK's own recursive-query benchmark
+(`benchmarks/aunt-kg`, Datalog-style transitive closure on an 11k-atom kinship
+graph). aunt-kg's measured per-query times: "all parents" 20 µs, "all mothers"
+877 µs, "all aunts" 4 ms — *microseconds*, using `PathMap` zipper primitives
+(`read_zipper_at_path` / `descend_to` / `to_next_val!` / `graft` / `restrict` /
+`meet` / `subtract`). Those primitives are all present in the Julia PathMap port
+(70/70 pass). For connectome at scale: iterate the frontier with a read zipper,
+`descend_to((syn r))` per reached r (prefix-narrowed subtrie lookup, µs-scale),
+walk the small subtrie to enumerate r's out-edges, accumulate per-post `rin`,
+threshold-check. O(E) total. **The interpreter model in this document remains the
+small-scale oracle reference; the scalable path is the zipper-algebra
+implementation in Julia, not a further MORK-internals change.**
 
 ## Multi-space (App + Common) — the substrate-validation payoff
 
@@ -103,6 +108,43 @@ trie optimization (the dormant `rebind_to_shared_prefix` "polarity flip" in
 `_eval_bind!`) is the substrate-novel follow-up — it would store all regions in
 one shared trie and is validated at the MORK/PathMap level already (70/70,
 1650/1650), but is **not** required for the App+Common semantics shown here.
+
+## Zipper-algebra at full FAFB scale (2026-05-28)
+
+After the tractability-boundary correction above (small-scale interpreter is the
+oracle, scale comes from direct zipper algebra), the connectome flow was
+re-implemented in [info_flow_zipper.jl](info_flow_zipper.jl) using PathMap zipper
+primitives directly — the same pattern upstream MORK uses for its own recursive
+queries (`benchmarks/aunt-kg`).
+
+Per-round shape: a frontier of newly-reached `r`s; for each `r`,
+`read_zipper_at_path(btm, (syn r))` (prefix-narrowed subtrie, µs); walk that
+subtrie to enumerate `r → post, cnt`; accumulate per-post `rin`; threshold
+`rin/tin ≥ 0.3`; emit newly-`reached`. O(E) total work; per-round = ms.
+
+Measured on the **full 3.73M-edge FAFB v783** (load via direct `set_val_at!`):
+
+| Modality | Seeds | Reached | Rounds | Total flow | rank-mismatches |
+|---|---:|---:|---:|---:|---:|
+| thermosensory | 29 | 367 | 8 (fixed point) | **0.09 s** | **0** |
+| gustatory | 408 | 4,540 | 30 (cap; small-world cascade still growing) | **9.75 s** | **0** |
+
+Compare on the K=1 *subset* alone (9,487 edges):
+
+| Approach | gustatory K=1 |
+|---|---|
+| Interpreter `InfoFlowFast` (prefix-narrowed `core_match`) | 99 s |
+| Interpreter `InfoFlowPush` (forward-push) | broke (`union-atom`, stack overflow) |
+| Exec-calculus + `fsum` | stuck at 15+ min, killed |
+| **Zipper algebra** | **45 ms** (this driver) on the same subset; **~10 s on the full 3.73M-edge graph** |
+
+Validation: `rank-mismatches = 0` against the awk oracle within the oracle's
+coverage (oracle is K-bounded; the zipper flow runs to fixed point, so it
+returns the same ranks plus extra later-rank nodes).
+
+The interpreter `InfoFlow.metta` / `InfoFlowFast.metta` / `InfoFlowMS.metta`
+remain as small-scale **oracle reference** + multi-space demonstration; the
+scalable production path is `info_flow_zipper.jl`.
 
 ## Reproduce
 
