@@ -200,10 +200,18 @@ end
     eval_metta([Symbol("bind!"), :myconst, 42], s)
     core_add!(s, [:(=), [:double, Symbol("\$x")], [:*, Symbol("\$x"), 2]])
     @test eval_metta([:double, 5], s) == 10
-    core_add!(s, [:(=), [:factorial, 0], 1])
+    # Single guarded clause — same single-clause+`if` discipline as the stdlib
+    # hygiene fix (`4b2033f`). The old two-clause form `(factorial 0) → 1` +
+    # `(factorial $n) → recurse` is the divergent overlap class flagged in the
+    # audit: under streaming `=`, both clauses fire on `(factorial 0)` and
+    # the recursive branch descends into negatives. Single-clause-with-guard
+    # works under both rewriters and aligns test code with stdlib discipline.
     core_add!(s, [:(=), [:factorial, Symbol("\$n")],
-                   [:*, Symbol("\$n"), [:factorial, [:-, Symbol("\$n"), 1]]]])
+                   [:if, [:>, Symbol("\$n"), 0],
+                     [:*, Symbol("\$n"), [:factorial, [:-, Symbol("\$n"), 1]]],
+                     1]])
     @test eval_metta([:factorial, 5], s) == 120
+    @test eval_metta([:factorial, 0], s) == 1   # base via guard, not via clause overlap
 end
 
 # ─────────────────────────────────────────────────────────────────────────────
