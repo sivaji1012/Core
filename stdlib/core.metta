@@ -103,14 +103,27 @@
    (eval $expression))
 
 ; ── Assertion helpers (for testing) ──────────────────────────────────────────
-; Per CeTTa cverify_compat.metta and hyperon-experimental
+; Per MeTTa language reference (Asserts §): assertEqual/assertEqualToResult
+; return the unit value () on match and an Error-expression on mismatch.
 
 (= (assertEqual $a $b)
    (if (== $a $b)
-       (assertEqual-passed $a)
+       ()
        (Error (assertEqual $a $b) AssertionFailed)))
 
 (= (assertAlphaEqual $a $b)
    (if (== $a $b)
-       (assertAlphaEqual-passed $a)
+       ()
        (Error (assertAlphaEqual $a $b) AssertionFailed)))
+
+; assertEqualToResult — evaluates $expr, treats $expected as a literal set of
+; expected results (no evaluation of the second arg). Per MeTTa spec, the
+; expected-results arg is a *set* even if it contains one element, so callers
+; write (assertEqualToResult (+ 1 2) (3)) — the bracket around 3 is mandatory.
+;
+; Implementation uses collapse to gather all non-deterministic results of
+; $expr and compares with == against the literal expected set.
+(= (assertEqualToResult $expr $expected)
+   (if (== (collapse $expr) $expected)
+       ()
+       (Error (assertEqualToResult $expr $expected) AssertionFailed)))
