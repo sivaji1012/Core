@@ -760,6 +760,31 @@ the signal and couples WILLIAM to a transitional shape that step 4
 changes again. The fix lives in `_eval_match` / `eval_metta_stream`
 during step 4, and WILLIAM regression-tests it for free.
 
+## Dual-definition shadowing — meta-pattern for the cleanup queue
+
+A primitive that becomes a space-aware special form (`get-type` at
+`d11d96d`, `type-cast` at `a7fc150`) leaves behind its grounded twin
+in the `GROUNDED_REGISTRY`. The special-form dispatch fires first, so
+MeTTa source is correct — but a direct Julia caller of the grounded
+function still gets the old structural-only behavior, and a reader
+six months from now sees two definitions and can't tell which is
+authoritative without tracing dispatch order. This is now the third
+instance of the dual-definition shadowing pattern (after `map`/
+`filter`/`foldl` grounded-vs-special-form pair from earlier).
+
+**Meta-rule for the cleanup queue**:
+
+> When a primitive becomes a space-aware special form, its grounded
+> twin must be **removed** (preferred) or made to **delegate** to the
+> special-form path. A live grounded twin alongside a live special-form
+> twin is silent dead code that contradicts the live one. The next
+> primitive that goes space-aware during streaming work (likely
+> `match`, `unify`) must follow the same rule.
+
+Trivial when caught early per primitive (one delete or one delegate);
+expensive when it accumulates and a future reader has to reverse-
+engineer dispatch precedence to find authoritative behavior.
+
 ## Bindings substrate: `$x = $y` equality relation (TWO independent confirmations)
 
 The spec's `match_atoms` carries two kinds of binding relations, not one:
