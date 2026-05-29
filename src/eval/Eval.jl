@@ -160,6 +160,15 @@ function _eval_metta_bounded(@nospecialize(expr), space::CoreSpace) :: Any
     # ── Rule rewriting ────────────────────────────────────────────────────────
     if head isa Symbol
         evaled_args = [eval_metta(a, space) for a in args]
+
+        # Per MeTTa spec: if `(: head (-> T1 T2 ... Tret))` is declared in the
+        # space AND any arg's type doesn't match the corresponding expected
+        # type, return (Error <expr> (BadArgType <pos> <expected> <actual>)).
+        # Scoped to the rule-rewrite path — grounded primitives handle their
+        # own type policy via the GROUNDED_REGISTRY callback's return.
+        type_err = _check_arg_types(head, expr, evaled_args, space)
+        type_err !== nothing && return type_err
+
         rules = core_rules(space, head)
         matched_arity = false
         for (head_params, body) in rules
@@ -185,6 +194,78 @@ function _eval_metta_bounded(@nospecialize(expr), space::CoreSpace) :: Any
     end
 
     expr
+end
+
+# ── Type-check helpers ────────────────────────────────────────────────────────
+
+"""
+    _check_arg_types(head, expr, evaled_args, space) → nothing | Error-expr
+
+If a declared signature `(: head (-> T1 T2 ... Tret))` exists in the space
+and an arg's actual type doesn't match its expected type, returns the
+spec-conformant Error atom `(Error <expr> (BadArgType <pos> <expected> <actual>))`.
+Returns `nothing` (allow eval to continue) if:
+  - No signature declared for this head.
+  - The declared signature has different arity than the call.
+  - All args' types pass the lenient `_types_match` check.
+
+Lenient by design — `Atom` and `%Undefined%` match anything (per spec),
+type variables (`\$t`) match anything (generic-parameter idiom from
+`(: == (-> \$t \$t Bool))`), and Variable-typed actual args match anything
+(since the var will be bound at unification).
+"""
+function _check_arg_types(head::Symbol, expr, evaled_args::Vector, space::CoreSpace)
+    sig_matches = core_match(space, [Symbol(":"), head, Symbol("\$sig")])
+    isempty(sig_matches) && return nothing
+    for m in sig_matches
+        m isa Vector && length(m) == 3 || continue
+        sig = m[3]
+        sig isa Vector && length(sig) >= 2 && sig[1] === Symbol("->") || continue
+        # sig = [->, T1, T2, ..., TN, Tret]
+        expected_arg_types = sig[2:end-1]
+        length(expected_arg_types) == length(evaled_args) || continue
+        for (i, (arg, expected_t)) in enumerate(zip(evaled_args, expected_arg_types))
+            actual_t = _infer_arg_type(arg, space)
+            _types_match(actual_t, expected_t) && continue
+            return Any[Symbol("Error"),
+                       expr,
+                       Any[Symbol("BadArgType"), i, expected_t, actual_t]]
+        end
+        return nothing
+    end
+    nothing
+end
+
+function _types_match(actual, expected) :: Bool
+    actual === expected && return true
+    # Per spec: %Undefined% and Atom are universal in the type system
+    actual   === Symbol("%Undefined%") && return true
+    expected === Symbol("%Undefined%") && return true
+    expected === Symbol("Atom")        && return true
+    # Variable actual (at unification it'll be bound to something concrete)
+    actual === Symbol("Variable") && return true
+    # Generic parameters in the expected type — `(: id (-> $t $t))`
+    expected isa Symbol && (startswith(string(expected), "\$") ||
+                            startswith(string(expected), "__var_")) && return true
+    false
+end
+
+function _infer_arg_type(atom, space::CoreSpace)
+    # Identical resolution rule as _eval_get_type:
+    # declared types in the space win, structural inference as fallback.
+    matches = core_match(space, [Symbol(":"), atom, Symbol("\$t")])
+    if !isempty(matches) && matches[1] isa Vector && length(matches[1]) >= 3
+        return matches[1][3]
+    end
+    atom_s = to_sexpr_atom(atom)
+    s = strip(atom_s)
+    tryparse(Int, s) !== nothing     && return Symbol("Number")
+    tryparse(Float64, s) !== nothing && return Symbol("Number")
+    (s == "True" || s == "False" || s == "true" || s == "false") && return Symbol("Bool")
+    startswith(s, "\"") && return Symbol("String")
+    startswith(s, "(")  && return Symbol("Expression")
+    startswith(s, "\$") && return Symbol("Variable")
+    Symbol("Symbol")
 end
 
 """
