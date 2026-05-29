@@ -57,6 +57,25 @@ Each step lands on a base where the previous one is closed:
 
 If you do step 4 before step 3, you'll be debugging cross-branch binding corruption as a match bug. If you skip the suite expansion, you'll declare streaming done on a suite that barely tests it. Both are recoverable but expensive — pre-empting them costs less than discovering them.
 
+## Probe 4 pins a semantic decision — not just cartesian fan-out
+
+`test/test_streaming_acceptance.jl` Probe 4 (`ab1d0fb` on main) asserts
+`sort(inner) == [10, 20, 20, 40]` for `(* (superpose (1 2)) (superpose (10 20)))`
+— **two `20`s, not one**. That isn't just the cartesian product; it's
+the multiplicity-preserving H-E result list. Streaming + collapse, when
+they land, must NOT run through any dedup pass on this path. SET semantics
+(the MorkSupercompiler's decomposition mode, CountSink-style) is
+incompatible with this and must stay off the collapse-of-superpose path.
+
+When Probe 4 flips green during resume, read that green as "multiplicity
+preserved," not just "cartesian product computed." If it ever goes green
+with `[10, 20, 40]` (length 3, deduped), the test is mismarked or collapse
+deduped — investigate which.
+
+This is the through-line from the CountSink / SET-semantics-decomposition
+discussion: streaming collapse is multiset-shaped, the supercompiler's
+SET decomposition is set-shaped, and the two paths must not cross.
+
 ## Open multi-result-log entries (frozen at park time)
 
 Single entry: `Any[:bin]` returning `[0, 1]`. Every other test in the suite hit the single-result path. Treat that as the baseline, not the ceiling — once the nondeterministic suite expansion lands, this log should have **many** entries, and each is a callsite that may need stream-aware handling.
@@ -65,5 +84,6 @@ Single entry: `Any[:bin]` returning `[0, 1]`. Every other test in the suite hit 
 
 - The hygiene fix that closes the divergent + dead-on-arrival + over-produce bins: `main` `4b2033f`
 - The eager lock-in that settles the CPS-helper question: `main` `ea79fcd`
+- The streaming acceptance oracles (`@test_broken` on main, flip on resume): `main` `ab1d0fb`
 - The original audit doc: `docs/CORE_DEEP_DIVE_FINDINGS_2026-05-29.md` on `main`
 - The three-way matrix prose lives in `4b2033f`'s commit body — `git log -1 4b2033f`
