@@ -167,6 +167,26 @@ Returns plain Julia: Symbol, Vector{Any}, Number, Bool, String.
 """
 function parse_metta(source::AbstractString) :: Vector{Any}
     tokens = tokenize(source)
+    # Split `!`-prefixed tokens so the `!` directive fires uniformly:
+    #   !42          → ["!", "42"]
+    #   !$x          → ["!", "$x"]
+    #   !bare-symbol → ["!", "bare-symbol"]
+    # The previous behavior merged `!` into the following atom, so only
+    # `!(...)` (parens-broken) triggered the directive. The HE-artifact case
+    # of `!name`-as-symbol is no longer preserved — per the spec note that
+    # form is "not a strong requirement." If a literal symbol starting with
+    # `!` is needed, write it explicitly via construction or a string.
+    expanded = String[]
+    for tok in tokens
+        if length(tok) >= 2 && tok[1] == '!' && tok != "!"
+            push!(expanded, "!")
+            push!(expanded, tok[2:end])
+        else
+            push!(expanded, tok)
+        end
+    end
+    tokens = expanded
+
     exprs  = Any[]
     i = 1
     while i <= length(tokens)
