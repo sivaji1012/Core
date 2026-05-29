@@ -74,13 +74,16 @@ end
         r = run_metta("!(collapse (color))", S)
         @test length(r) == 1                                # one top-level expr
         inner = r[1]
-        # Single combined assertion: cardinality AND value must both be right.
-        # Don't split into separate length and set checks — main returns
-        # accidentally-correct cardinalities (unreduced exprs with the same
-        # element count) that would mark the length check "unexpected pass."
-        @test_broken inner isa AbstractVector &&
-                     length(inner) == 3 &&
-                     Set(inner) == Set([:red, :green, :blue])
+        # FLIPPED on prototype/stream-eval-and-alpha: streaming `=` enumerates
+        # all matching clauses, so `(collapse (color))` returns the full set.
+        # `@test_broken` on `main` (only first clause fires under first-match-
+        # wins); `@test` here under streaming. Single combined assertion
+        # (length AND set) so length-only accidental passes can't silently
+        # mark this "unexpected pass" — caught a first-draft probe writing
+        # error that way (see ab1d0fb commit body).
+        @test inner isa AbstractVector &&
+              length(inner) == 3 &&
+              Set(inner) == Set([:red, :green, :blue])
     end
 
     # ─────────────────────────────────────────────────────────────────────────

@@ -76,6 +76,39 @@ This is the through-line from the CountSink / SET-semantics-decomposition
 discussion: streaming collapse is multiset-shaped, the supercompiler's
 SET decomposition is set-shaped, and the two paths must not cross.
 
+## WILLIAM regression under streaming (NEW — found at first resume run)
+
+When the prototype was re-rebased onto main (`31282e6`) and the full
+`runtests.jl` was run under the streaming rewriter, the Core MeTTa
+Compatibility Suite stayed green (125/125) but **WILLIAM dropped from
+27/27 to 22/27 — 5 failures**. The failing testsets:
+
+  - W1/W6 count + support (`(edge $x bird)` count expected 3, etc.)
+  - Dictionary CRUD
+  - W3 Learn
+  - WP§7.2 i-surprisingness
+  - (one more)
+
+WILLIAM's primitives (`WILLIAM.count`, `WILLIAM.Learn`, etc.) appear
+to depend on a specific cardinality/shape from `match` or rule
+rewriting that streaming alters — likely the same "unwrap-single-vs-
+multi" boundary that `_eval_match` exposes in Probe 3. This is a
+prerequisite finding for landing streaming: either WILLIAM's
+primitives need to be adapted to stream-aware match returns, or
+the streaming rewriter needs a compatibility mode for grounded
+primitives that call back into match.
+
+WHERE TO LOOK FIRST:
+  - `packages/AdaptiveCompression/src/.../count.jl` (or wherever
+    `WILLIAM.count` is registered as a grounded primitive)
+  - Anywhere a Julia primitive calls `eval_metta` / `run_metta` /
+    `core_match` and assumes a specific return shape
+
+THE TEST IS DIAGNOSTIC, NOT ASPIRATIONAL: WILLIAM was 27/27 on main
+*today* and 22/27 on prototype, so the 5 failures are exact regressions,
+not aspirational improvements. Fix them before declaring streaming ready
+to merge.
+
 ## Open multi-result-log entries (frozen at park time)
 
 Single entry: `Any[:bin]` returning `[0, 1]`. Every other test in the suite hit the single-result path. Treat that as the baseline, not the ceiling — once the nondeterministic suite expansion lands, this log should have **many** entries, and each is a callsite that may need stream-aware handling.
