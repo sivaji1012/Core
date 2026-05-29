@@ -490,17 +490,27 @@ function _eval_exec_atom(expr::Vector, space::CoreSpace)
 end
 
 function _eval_add_atom(args::Vector, space::CoreSpace)
+    # Per MeTTa spec: add-atom HOLDS its atom argument — stores the
+    # expression as data, unevaluated. add-reduct is the companion that
+    # evaluates first. Previously PRIMUS evaluated, collapsing the
+    # add-atom/add-reduct distinction and silently reducing any expression
+    # whose inner subterms had grounded/rule definitions. This broke the
+    # algorithm-layer use case of storing parameterised templates as
+    # data (e.g. (add-atom &self (rule-template $x))) which is exactly
+    # what self-modifying / ActPC workloads do.
     length(args) < 2 && return nothing
     sp = _resolve_space(args[1], space)
-    atom = eval_metta(args[2], sp)
+    atom = args[2]   # HELD — not evaluated
     core_add!(sp, atom)
     atom
 end
 
 function _eval_remove_atom(args::Vector, space::CoreSpace)
+    # Same spec rule as add-atom: HOLD the atom argument. The user knows
+    # what they stored; removing requires matching the literal atom shape.
     length(args) < 2 && return nothing
     sp = _resolve_space(args[1], space)
-    atom = eval_metta(args[2], sp)
+    atom = args[2]   # HELD — not evaluated
     core_remove!(sp, atom)
     atom
 end
