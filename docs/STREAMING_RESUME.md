@@ -96,7 +96,7 @@ unification).
 | 2 | `WILLIAM.count &self (edge $x fish)` (39) | `[0]` | `Any[1]` | same |
 | 3 | `WILLIAM.dict-size &self` (53) | `[2]` | `Any[1]` | `dict-size` → `(size-atom (collapse (match …)))` |
 | 4 | `WILLIAM.count` after Learn (66) | `>= 2` | `1` | `Learn` → `count` (chain 1) |
-| 5 | `WP§7.2 i-surprisingness` (99) | `Number > 0` | non-Number | `i-surprisingness` → `count` (chain 1) — downstream |
+| 5 | `WP§7.2 i-surprisingness` (99) | `Number > 0` | `0` (Number, fails `> 0`) | `i-surprisingness` → `count` (chain 1) — downstream, VERIFIED |
 
 **All 5 share one root cause.** The `WILLIAM.count` definition in
 [`packages/WILLIAM/william.metta:77-80`](../../WILLIAM/william.metta#L77-L80)
@@ -133,7 +133,7 @@ same "always 1" symptom.
 | 1, 2 | **Match-unwrap boundary** | `(collapse (match …))` returns `Any[Vector]` instead of `Vector`. Cardinality info is preserved in the substrate, hidden by the wrapper. |
 | 3 | **Match-unwrap boundary** | Identical pattern: `(size-atom (collapse (match …)))`. |
 | 4 | **Match-unwrap boundary (transitive)** | `Learn` calls `count`; count's regression propagates. |
-| 5 | **Match-unwrap boundary (downstream)** | `i-surprisingness` uses `count` as denominator; downstream arithmetic produces a non-Number. |
+| 5 | **Match-unwrap boundary (transitive, verified)** | `i-surprisingness` body read: `(/ (- (count …) 1) 1)`. `count` is its sole match/collapse-shaped dependency; the `$expected` denominator is a literal `1`, not a second cardinality. So this is genuinely transitive on `count`, not a hidden multiplicity surface. Under broken-count returning 1, the formula evaluates to `0` — a Number, but the test asserts `> 0`, hence failure. The symptom-mechanism match is exact, and there is no ratio-of-differently-collapsed-cardinalities lurking. |
 
 **Bucket totals: cardinality/unwrap-boundary 5, env-discard 0, multiplicity 0.**
 
