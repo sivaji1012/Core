@@ -760,6 +760,40 @@ the signal and couples WILLIAM to a transitional shape that step 4
 changes again. The fix lives in `_eval_match` / `eval_metta_stream`
 during step 4, and WILLIAM regression-tests it for free.
 
+## Bindings substrate: `$x = $y` equality relation (TWO independent confirmations)
+
+The spec's `match_atoms` carries two kinds of binding relations, not one:
+
+- `$x <- value` (variable-to-value assignment) — PRIMUS has this via mutable `Dict`
+- `$x = $y` (variable-to-variable equality) — PRIMUS LACKS this
+
+Confirmed from two independent angles in the same session:
+
+1. **Reference-algorithm probe** (the `metta`/`interpret_tuple`/`match_atoms`
+   spec section): `match_atoms` returns the equality relation when both sides
+   are variables — `elif $ml == Variable and $mr == Variable: $result = [{$left = $right}]`.
+   PRIMUS_Core's `Bindings.jl` doesn't model this either.
+2. **`unify` end-to-end probe (F6)**: `(unify $x $y yes no)` returns `:yes`
+   on PRIMUS — the user-visible answer is correct (the unify succeeds),
+   but the spec's internal representation uses the equality relation
+   `{$x = $y}` rather than an assignment. PRIMUS gets the right answer
+   by accident in the trivial case; the difference will surface once
+   bindings are threaded through fan-out (because the equality relation
+   is what propagates the constraint across branches).
+
+**Salvage instruction sharpened**: when porting PRIMUS_Core's `Bindings.jl`
+in step 3, do NOT port it intact — *extend* it with the equality relation
+the spec requires. PRIMUS_Core has the right *container* (immutable,
+structural sharing, Some-wrap) but the wrong *contents* (assignment-only).
+Both halves are needed for streaming `=` to honor the spec's
+`match_atoms` correctly.
+
+This is the same finding twice over — once from the spec algorithm,
+once from the end-to-end test — and the convergence is itself worth
+recording: independent confirmations that the equality relation is real
+and needed are worth more than fixing it prematurely on a `Dict` that's
+about to be replaced.
+
 ## Open multi-result-log entries (frozen at park time)
 
 Single entry: `Any[:bin]` returning `[0, 1]`. Every other test in the suite hit the single-result path. Treat that as the baseline, not the ceiling — once the nondeterministic suite expansion lands, this log should have **many** entries, and each is a callsite that may need stream-aware handling.
