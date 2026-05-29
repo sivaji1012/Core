@@ -300,30 +300,83 @@ Empirical confirmation:
 
 Currently latent because stdlib's `(= Nil ())` declaration isn't
 referenced anywhere as a reducible — `Nil` is used as a literal Symbol
-in match patterns, never as something to evaluate. But it's a real bug:
-a user writing `(= my-const 42)` expecting `my-const` to reduce to `42`
-gets silence.
+in match patterns, never as something to evaluate.
+
+**Blast radius (wider than `Nil`)**: symbol-LHS is the standard idiom
+for **named constants and nullary aliases** in MeTTa: `(= pi 3.14159)`,
+`(= empty-board (board))`, `(= default-config (cfg ...))`. Every one
+of those is dead in PRIMUS today. The reason this hasn't bitten is
+that stdlib happens to use the pattern only for non-reducibles. Stops
+being latent the moment any user writes the most natural definition
+in the language. **Failure mode is silence** — the author has no
+signal their constant didn't take.
+
+**One bug, two callers fixed**. The evaluator's bare-symbol branch in
+`_eval_metta_one` ALREADY has the code to handle symbol-LHS rules:
+```julia
+if expr isa Symbol
+    rules = core_rules(space, expr)
+    !isempty(rules) && return eval_metta(rules[1][2], space)
+```
+This branch exists *specifically* to reduce symbol constants — it's
+the evaluator trying to do exactly what `(= Nil ())` needs. But
+`core_rules` can never return non-empty for a symbol head because of
+the line-622 predicate. **One predicate fix at line 622 makes both
+the symbol-LHS storage AND the evaluator's existing symbol-reduction
+branch work** — not two bugs to chase, one bug whose fix unlocks an
+already-written branch.
 
 **Fix** (small, main-branch independent of streaming):
-Augment `core_rules`'s walk to handle the symbol-LHS case:
 ```julia
-# Currently:
+# Currently (line 622):
 head_part isa Vector && !isempty(head_part) && head_part[1] === head_sym || return
 push!(rules, (head_part[2:end], body))
 
-# Should also handle:
-head_part isa Symbol && head_part === head_sym → push!(rules, ([], body))
+# Should be:
+if head_part isa Vector && !isempty(head_part) && head_part[1] === head_sym
+    push!(rules, (head_part[2:end], body))
+elseif head_part isa Symbol && head_part === head_sym
+    push!(rules, (Any[], body))   # zero-arg rule, empty params
+end
 ```
 
-Body lookup for zero-arg symbol calls already works elsewhere in the
-evaluator (`_eval_metta_one`'s symbol branch calls `core_rules`); the
-gap is purely in `core_rules`'s discrimination of LHS shapes.
+**Interaction with section D — fix-must-preserve-the-gate**:
+The corrected predicate is still **inside** the length-3 gate from
+section D. The symbol-LHS case is a length-3 atom (`[:(=), :head, body]`)
+with `head_part isa Symbol`, NOT an escape from the arity gate. A
+loose rewrite that drops length-3 to catch symbol-LHS would *also*
+start matching malformed `(= LHS-only)`/`(=)`/`(= L R EXTRA)` atoms
+as rules. **Section E's fix must stay strictly inside section D's
+length-3 gate.** If you do D and E in different sessions, the second
+one needs to know about the first — flagged here so they don't
+quietly reopen each other.
 
-Priority: low (latent, nothing in current tree depends on this firing).
-But it's a one-screen edit and the kind of thing that surprises a
-user-written `.metta` program at the worst time. Worth a follow-up
-issue with the `fo"o`/`!42` parser bugs — same class of "documented-
-behavior doesn't actually work."
+**Interaction with step 4 (streaming) — surface change for fan-out**:
+Once `core_rules` returns symbol-LHS rules, `_rule_rewrite_stream`
+(step 4) MUST fan them out too — `(= color red)` `(= color green)`
+should stream `{red, green}` exactly as the expression-LHS multi-
+clause does. So fixing E on main *before* step 4 means step 4 inherits
+a `core_rules` that returns symbol-LHS rules and must fan them; fixing
+E on main *after* step 4 means adding a new rule shape to an
+already-streaming rewriter. Either order works, but the second person
+needs to know the first changed the surface. **E and step 4 touch
+the same `core_rules`/`_rule_rewrite_stream` pair.**
+
+Probe-1-shaped acceptance check for symbol-LHS streaming (the test
+that should land alongside Probe 1 when E is fixed):
+```metta
+(= color red)
+(= color green)
+(= color blue)
+!(collapse color)    ; expect {red, green, blue}
+```
+
+Priority: BUMPED from "low / fix during a known-issues sweep" to
+"fix before anyone writes much MeTTa against this." The blast radius
+is "all named constants," not just `Nil`, and the failure mode is
+silence. Class is the same as `fo"o`/`!42` (documented-behavior
+doesn't actually work) but the user-visibility is higher because
+named constants are a normal idiom, not a parser edge case.
 
 ## Meta-rule: the single-to-stream caller-audit pattern
 
