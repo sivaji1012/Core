@@ -161,6 +161,97 @@ with a top-level `!my-var` that resolves to a bare symbol — silence
 instead of evaluation. Fix is in `parse_metta`'s `!`-prefix
 handling, not in `eval_metta`. Low priority, no streaming dependency.
 
+## Meta-rule: the single-to-stream caller-audit pattern
+
+Three independent traces now point at the same general rule, and it's
+worth carrying into step 4 as the recurring shape rather than
+re-discovering per-primitive:
+
+> Every primitive that returns a single value today and queries the
+> space — directly via `match`/`core_match`, or indirectly via another
+> primitive that does — needs a caller-audit when streaming lands,
+> because the space query becomes a stream. The fix isn't in the
+> primitive; the consumer's assumption that "one space query = one
+> result" stops holding the moment step 1+3 land.
+
+The three instances:
+
+1. **WILLIAM** (`969020d`, `868f658`): five regressions, all
+   `(size-atom (collapse (match …)))` shape. The substrate's match
+   was already multi-result; the wrapper boundary at
+   `eval_metta_stream`/`_eval_match` hides cardinality. Documented
+   above; step 4 fixes.
+
+2. **`_eval_if`** (probe earlier this session): condition evaluation
+   is single-valued today (`cond = eval_metta(args[1], space)`). If
+   `args[1]` evaluates to a stream of Bools under streaming (e.g.
+   `(> 5 (superpose (3 7)))` → `{true, false}`), `_eval_if`'s
+   `cond === true || cond == "True"` check sees a stream object
+   and routes everything to the else-branch. Same caller-audit
+   class — special form that consumes one space-query-derived value
+   today, has to handle a stream tomorrow.
+
+3. **`get-type` / `type-cast` / `get-type-space`** (this trace):
+   covered in detail in the next section.
+
+The meta-rule says: at step 4 commit time, sweep `src/eval/Eval.jl`
+and `src/primitives/Primitives.jl` for *every* `eval_metta(x, space)`
+or `core_match(...)` call site whose result is consumed as a single
+value, and audit each for stream-handling. The three traced above
+are samples, not the population.
+
+## Type-oracle consolidation (deferred consumer migration with caller-audit)
+
+The H-E `type_cast` pseudocode reads against PRIMUS as follows. The
+three current type oracles disagree precisely where the type system
+is load-bearing — and the disagreement isn't "three approximations of
+the same thing," it's *`get-type` is the wrong oracle for the only
+cases that matter*:
+
+| Atom | structural | declared | `get-type` | `get-type-space` | `type-cast … Number` |
+|---|---|---|---|---|---|
+| `42` | Number | — | `Number` ✓ | — | OK ✓ |
+| `foo` | Symbol | `Number` | `Symbol` ✗ | `Number` ✓ | Error (sees Symbol) ✗ |
+| `baz` | Symbol | `Number`, `String` | `Symbol` ✗ | `Number` only (drops String) ✗ | Error ✗ |
+
+Structural inference is correct for literals (which don't need a type
+system) and wrong for symbols with declarations (the only thing
+declarations exist for). The three oracles agree precisely where the
+type system is trivial; they disagree precisely where it's
+load-bearing.
+
+The `baz` row is the multi-type case and contains the hidden decision:
+`baz` is declared *both* `Number` and `String`; `get-type-space` drops
+the second by taking first-match. The H-E pseudocode's
+`for $t in $types` loop is a fan-out over **all** declared types.
+Under streaming, the *correct* `get-type baz` returns the stream
+`{Number, String}` — a multi-typed atom genuinely has both.
+
+**Resume-notes line, deferred consumer migration** (NOT a precondition
+for step 1+3, a consumer to migrate after):
+
+> `type-cast` / `get-type` / `get-type-space` are downstream consumers
+> of step 1+3. They currently use structural inference (`get-type`,
+> `type-cast`) or first-match-only space lookup (`get-type-space`),
+> which disagree on declared-but-non-structural atoms and drop
+> multi-type declarations. Under streaming they collapse to one
+> oracle querying `(: $atom $t)`, returning the `(type, bindings)`
+> stream the rewriter natively produces — which means **`get-type`
+> becomes multi-valued for multi-typed atoms**. Audit `get-type`'s
+> callers for single-result assumptions before landing this — same
+> class as the WILLIAM unwrap surface, third instance of the meta-rule
+> above. Not free, not automatic; deferred consumer migration with
+> its own caller-audit attached.
+
+What's correct already, and worth keeping correct: the `Atom` and
+`%Undefined%` universal-type short-circuits (`type-cast 42 Atom &self
+→ 42`, `type-cast 42 %Undefined% &self → 42`). That's the branch of
+the pseudocode that's load-bearing for **evaluation order** —
+`Atom` is the metatype that tells the evaluator "don't reduce this,"
+so the eager rewriter depends on it being correct. The trace confirms
+it is. What's missing is the type-*query* machinery, which is
+genuinely downstream of streaming.
+
 Re-rebased prototype onto main (`31282e6`) and ran the full suite under
 the streaming rewriter. Core MeTTa Compatibility Suite stayed green
 (125/125), but **WILLIAM dropped 27→22 — 5 regressions**. Per the
