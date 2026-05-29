@@ -247,6 +247,84 @@ separate patches will surface a fourth case later. Low priority overall
 because the robustness sub-bug in A.1 means malformed input crashes
 the parser, not just produces wrong output.
 
+## `=` semantics audit — two findings from the same probe
+
+The `=` special-expression probe confirmed PRIMUS handles the standard
+`(= LHS RHS)` form correctly and treats malformed `=` atoms (arity ≠ 3)
+as inert KB atoms per spec. But the probe surfaced two structural items
+worth pinning: one is a step-4 acceptance check, the other is a
+main-branch bug masquerading as inertness.
+
+### D. Length-3 gate preservation (step-4 acceptance check)
+
+[`CoreSpace.jl:619`](../src/space/CoreSpace.jl#L619) gates rule lookup
+on `length(atom) == 3 && atom[1] === :(=)`. This is *why* malformed
+`=` atoms — `(= LHS-only)`, `(=)`, `(= L R EXTRA)` — are inert today:
+they're stored in the trie, queryable via `match`, but invisible to
+`core_rules`. That inertness is a property of THIS LINE, not of `=`
+semantics generally, and the rule-lookup path is exactly what step 4
+(`_rule_rewrite_stream`) rewrites.
+
+**Step-4 acceptance check** (one line, before declaring step 4 done):
+
+> Confirm `_rule_rewrite_stream` preserves the length-3 gate so
+> fan-out doesn't sweep malformed `=` atoms (arity 0/1/4+) into the
+> result stream. The current first-match-wins rewriter couldn't sweep
+> them by luck of stopping early; fan-out enumerates *all* matching
+> atoms, so a looser query would surface them as accidental zero-body
+> or extra-arg clauses. The gate is invisible-until-broken; this
+> probe shows the atoms that would break it if it goes missing.
+
+Not a bug — an invariant the streaming work has to preserve through
+the rewrite.
+
+### E. Symbol-LHS rules are dead code on main (latent bug)
+
+The probe also revealed that `(= bare-symbol body)` rules are stored
+in the trie but never fire. [`core_rules`](../src/space/CoreSpace.jl#L622)
+explicitly requires `head_part isa Vector && !isempty(head_part) &&
+head_part[1] === head_sym`. A symbol-LHS rule has `head_part isa Symbol`,
+so the predicate fails and the rule is filtered out at lookup time.
+
+Empirical confirmation:
+```
+(= LHS proper-body)  added.  Then:
+  eval_metta(:LHS, S)         → :LHS         (unreduced)
+  core_rules(S, :LHS)         → []           (empty)
+  match returns the atom      → proper-body  (trie has it)
+
+(= Nil ()) from stdlib's list.metta:
+  eval_metta(:Nil, S)         → :Nil         (unreduced — Nil is dead)
+  core_rules(S, :Nil)         → []
+```
+
+Currently latent because stdlib's `(= Nil ())` declaration isn't
+referenced anywhere as a reducible — `Nil` is used as a literal Symbol
+in match patterns, never as something to evaluate. But it's a real bug:
+a user writing `(= my-const 42)` expecting `my-const` to reduce to `42`
+gets silence.
+
+**Fix** (small, main-branch independent of streaming):
+Augment `core_rules`'s walk to handle the symbol-LHS case:
+```julia
+# Currently:
+head_part isa Vector && !isempty(head_part) && head_part[1] === head_sym || return
+push!(rules, (head_part[2:end], body))
+
+# Should also handle:
+head_part isa Symbol && head_part === head_sym → push!(rules, ([], body))
+```
+
+Body lookup for zero-arg symbol calls already works elsewhere in the
+evaluator (`_eval_metta_one`'s symbol branch calls `core_rules`); the
+gap is purely in `core_rules`'s discrimination of LHS shapes.
+
+Priority: low (latent, nothing in current tree depends on this firing).
+But it's a one-screen edit and the kind of thing that surprises a
+user-written `.metta` program at the worst time. Worth a follow-up
+issue with the `fo"o`/`!42` parser bugs — same class of "documented-
+behavior doesn't actually work."
+
 ## Meta-rule: the single-to-stream caller-audit pattern
 
 Three independent traces now point at the same general rule, and it's
