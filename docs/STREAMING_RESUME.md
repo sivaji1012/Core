@@ -76,38 +76,100 @@ This is the through-line from the CountSink / SET-semantics-decomposition
 discussion: streaming collapse is multiset-shaped, the supercompiler's
 SET decomposition is set-shaped, and the two paths must not cross.
 
-## WILLIAM regression under streaming (NEW — found at first resume run)
+## WILLIAM regression under streaming — classified (resume diagnostic)
 
-When the prototype was re-rebased onto main (`31282e6`) and the full
-`runtests.jl` was run under the streaming rewriter, the Core MeTTa
-Compatibility Suite stayed green (125/125) but **WILLIAM dropped from
-27/27 to 22/27 — 5 failures**. The failing testsets:
+Re-rebased prototype onto main (`31282e6`) and ran the full suite under
+the streaming rewriter. Core MeTTa Compatibility Suite stayed green
+(125/125), but **WILLIAM dropped 27→22 — 5 regressions**. Per the
+audit-bucket framing the user proposed, classification matters more
+than the patch: the question is whether all 5 are
+**cardinality/env-discard** (resume ordering holds; step 3 fixes them
+as a side effect) or whether any is **multiplicity** (resume ordering
+needs a "where does dedup live" step inserted before equality
+unification).
 
-  - W1/W6 count + support (`(edge $x bird)` count expected 3, etc.)
-  - Dictionary CRUD
-  - W3 Learn
-  - WP§7.2 i-surprisingness
-  - (one more)
+### The five regressions
 
-WILLIAM's primitives (`WILLIAM.count`, `WILLIAM.Learn`, etc.) appear
-to depend on a specific cardinality/shape from `match` or rule
-rewriting that streaming alters — likely the same "unwrap-single-vs-
-multi" boundary that `_eval_match` exposes in Probe 3. This is a
-prerequisite finding for landing streaming: either WILLIAM's
-primitives need to be adapted to stream-aware match returns, or
-the streaming rewriter needs a compatibility mode for grounded
-primitives that call back into match.
+| # | Test (line) | Expected | Got | Primitive chain |
+|---|---|---|---|---|
+| 1 | `WILLIAM.count &self (edge $x bird)` (37) | `[3]` | `Any[1]` | `count` → `(size-atom (collapse (match …)))` |
+| 2 | `WILLIAM.count &self (edge $x fish)` (39) | `[0]` | `Any[1]` | same |
+| 3 | `WILLIAM.dict-size &self` (53) | `[2]` | `Any[1]` | `dict-size` → `(size-atom (collapse (match …)))` |
+| 4 | `WILLIAM.count` after Learn (66) | `>= 2` | `1` | `Learn` → `count` (chain 1) |
+| 5 | `WP§7.2 i-surprisingness` (99) | `Number > 0` | non-Number | `i-surprisingness` → `count` (chain 1) — downstream |
 
-WHERE TO LOOK FIRST:
-  - `packages/AdaptiveCompression/src/.../count.jl` (or wherever
-    `WILLIAM.count` is registered as a grounded primitive)
-  - Anywhere a Julia primitive calls `eval_metta` / `run_metta` /
-    `core_match` and assumes a specific return shape
+**All 5 share one root cause.** The `WILLIAM.count` definition in
+[`packages/WILLIAM/william.metta:77-80`](../../WILLIAM/william.metta#L77-L80)
+is:
 
-THE TEST IS DIAGNOSTIC, NOT ASPIRATIONAL: WILLIAM was 27/27 on main
-*today* and 22/27 on prototype, so the 5 failures are exact regressions,
-not aspirational improvements. Fix them before declaring streaming ready
-to merge.
+```metta
+(= (WILLIAM.count $space $pattern)
+   (let $result (collapse (match $space $pattern yes))
+     (size-atom $result)))
+```
+
+Tracing this under streaming:
+1. `_eval_match` returns `Any[:yes, :yes, :yes]` (N substituted templates) —
+   correct, unchanged from main.
+2. `_eval_collapse` (simplified on prototype to delegate to
+   `eval_metta_stream`) calls `eval_metta_stream(inner)`.
+3. `eval_metta_stream` sees the Vector return from `_eval_match`, checks
+   `r isa _StreamResult` (false — only the rewriter populates that
+   sentinel), and wraps as `Any[Vector]` — a 1-element stream containing
+   the original match-result Vector as its lone element.
+4. `_eval_collapse` returns this 1-element wrapper.
+5. `size-atom` counts the wrapper → **1, regardless of N matches.**
+
+The substrate produces the right cardinality the whole way through;
+the wrapper at the `_eval_match` ↔ `eval_metta_stream` boundary hides
+it by re-wrapping. For the 0-match case (regression #2), `_eval_match`
+returns `[]`, `Any[[]]` has length 1 — same wrapper bug producing the
+same "always 1" symptom.
+
+### Bucket classification
+
+| # | Bucket | Notes |
+|---|---|---|
+| 1, 2 | **Match-unwrap boundary** | `(collapse (match …))` returns `Any[Vector]` instead of `Vector`. Cardinality info is preserved in the substrate, hidden by the wrapper. |
+| 3 | **Match-unwrap boundary** | Identical pattern: `(size-atom (collapse (match …)))`. |
+| 4 | **Match-unwrap boundary (transitive)** | `Learn` calls `count`; count's regression propagates. |
+| 5 | **Match-unwrap boundary (downstream)** | `i-surprisingness` uses `count` as denominator; downstream arithmetic produces a non-Number. |
+
+**Bucket totals: cardinality/unwrap-boundary 5, env-discard 0, multiplicity 0.**
+
+### What this tells the resume ordering
+
+**The resume-notes ordering as written HOLDS.** All 5 regressions fall
+in the same boundary the resume notes already plan to fix:
+- Step 3 (immutable Bindings) — prerequisite, doesn't directly close these
+- Step 4 (`_eval_match` deep-thread) — **closes all 5 as a side effect**
+  by making `_eval_match` return a real stream that `eval_metta_stream`
+  unwraps without re-wrapping
+
+Zero multiplicity surprises. The decision pinned by Probe 4 (collapse
+preserves duplicates) can be deferred to the equality work as planned —
+WILLIAM doesn't depend on dedup semantics, only on the cardinality
+boundary not lying about how many matches exist.
+
+### Acceptance signal repurposed
+
+WILLIAM was 27/27 on main *today*, 22/27 on prototype. After step 4
+lands, WILLIAM should return to 27/27 *and stay there* — same diagnostic
+role as Probe 3, but exercising the boundary under uncontrolled
+production-shaped load instead of a hand-built two-level chain. Watch
+all five flip together when step 4's deep-thread is correct; if any
+remain red after step 4, the boundary fix is incomplete (most likely
+explanation: `eval_metta_stream` still wraps non-`_StreamResult` Vectors
+when the result should pass through as the stream).
+
+### DO NOT patch WILLIAM
+
+Resist the temptation to fix `WILLIAM.count` by wrapping the inner
+`collapse` differently or using `length(get-atoms)` or any other
+workaround. The regressions ARE the diagnostic; patching them spends
+the signal and couples WILLIAM to a transitional shape that step 4
+changes again. The fix lives in `_eval_match` / `eval_metta_stream`
+during step 4, and WILLIAM regression-tests it for free.
 
 ## Open multi-result-log entries (frozen at park time)
 
