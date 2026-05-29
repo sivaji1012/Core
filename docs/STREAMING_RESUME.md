@@ -76,7 +76,90 @@ This is the through-line from the CountSink / SET-semantics-decomposition
 discussion: streaming collapse is multiset-shaped, the supercompiler's
 SET decomposition is set-shaped, and the two paths must not cross.
 
-## WILLIAM regression under streaming — classified (resume diagnostic)
+## Forced sub-decisions inside step 4 (NOT deferrable to step 5)
+
+Surfaced by reading the H-E `interpret` pseudocode against PRIMUS's
+`eval_metta` and noticing what *becomes* forced the moment the stream
+is pair-shaped. Each of these reads as "deferrable cleanup" today
+(single-result hides them) but becomes unavoidable at step 4. Decide
+them deliberately during step 4; don't ship whatever accidentally
+falls out of the projection code.
+
+### A. Error-in-stream filtering at `collapse` (forced by step 1, decided at step 4)
+
+Today, single-result, `(Error …)` short-circuits cleanly. After
+step 1 (immutable Bindings → `[(Atom, Bindings)]` pairs) and step 3
+(rewriter fan-out), a multi-clause function where one clause succeeds
+and another errors produces a mixed stream:
+
+```
+(foo) → [(Bob, {…}), (Error … BadType, {…})]
+```
+
+`collapse` must decide:
+
+- **Option A (H-E conformant)**: filter — yield Successes if any
+  exist, else yield Errors. Matches the pseudocode's
+  `len($success) > 0` branch.
+- **Option B**: yield mixed — let downstream consumers see both
+  Bob and the Error and handle it.
+
+H-E's answer is A. PRIMUS today has *no* answer because single-result
+never forced the question. Pick A explicitly during step 4 and write
+the test for it; otherwise `collapse` will do whatever the projection
+code accidentally implements, and the next person to hit a mixed
+stream will debug a behavior nobody decided.
+
+### B. Evaluated-marker (the general fix for the divergence class)
+
+The pseudocode line `<mark $a as evaluated>` is not a perf optimization —
+it's a **termination mechanism**. Without it, under fan-out, a result
+fed back through eval can re-trigger the same `=` clauses it just came
+from. On the eager single-result path PRIMUS gets away with it because
+recursion bottoms out on first-match. Once fan-out is live, a
+self-referential or mutually-recursive rule set that *would* terminate
+under the evaluated-marker can instead re-expand.
+
+The stdlib hygiene fix (`4b2033f`) closed the *known* divergence cases
+(factorial, nth) by forcing single-clause + `if`-guarded discipline.
+That treats the symptom per-rule. The evaluated-marker is the
+**general mechanism** that makes the rewriter robust to overlap-induced
+re-expansion across any rule set — including future user programs that
+aren't held to the same discipline.
+
+This is a step-4-or-step-5 **correctness** item, not cleanup. Without
+it, the single-guarded-clause discipline becomes a *required* author
+convention rather than a stylistic preference, and any program that
+violates it can non-terminate under streaming even though it terminated
+under main.
+
+(Full metatype-driven dispatch — branching on MeTTa `%type%` rather
+than Julia `isa` — remains genuinely deferrable. PRIMUS's `isa Symbol`/
+`isa Vector` collapses to the same behavior for the cases that matter
+in streaming. Don't bundle it with the evaluated-marker work.)
+
+## Known parser issue (main, not streaming-specific)
+
+`run_metta`'s `!` directive parser silently strips `!` on non-Vector
+atoms. As of `31282e6`:
+
+```
+!(+ 1 2)        → Any[3]              ✓
+!42             → Any[]                ✗ should be Any[42]
+!$x             → Any[]                ✗ should be Any[$x]
+!bare-symbol    → Any[]                ✗ should be Any[:bare-symbol]
+```
+
+The exec directive at run_metta only triggers when the parsed
+expression is a Vector with `!` head; bare atoms preceded by `!`
+don't form a Vector and so `parse_metta` either drops the `!` or
+returns nothing.
+
+Workaround for probe testing: wrap the atom — `!(quote 42)`,
+`!(noeval bare-symbol)`. But it's a real bug for `.metta` files
+with a top-level `!my-var` that resolves to a bare symbol — silence
+instead of evaluation. Fix is in `parse_metta`'s `!`-prefix
+handling, not in `eval_metta`. Low priority, no streaming dependency.
 
 Re-rebased prototype onto main (`31282e6`) and ran the full suite under
 the streaming rewriter. Core MeTTa Compatibility Suite stayed green
