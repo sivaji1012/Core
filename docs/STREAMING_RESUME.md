@@ -138,6 +138,85 @@ than Julia `isa` — remains genuinely deferrable. PRIMUS's `isa Symbol`/
 `isa Vector` collapses to the same behavior for the cases that matter
 in streaming. Don't bundle it with the evaluated-marker work.)
 
+### C. `Empty` as "no-results-in-stream" sentinel (couples to A)
+
+Spec says: "`Empty` — the function doesn't return any result, it is
+different from the void or unit result in other languages." On main
+today (single-result), PRIMUS treats `Empty` as a regular Symbol — a
+function that "returns" `Empty` just returns the symbol `:Empty`.
+That's missing the protocol meaning.
+
+`Empty` only has meaning **once results are a stream**, because then
+"no result" is a real shape (an empty Vector) that's distinct from
+"one result that happens to be the symbol Empty." Under step 1 + 3,
+when `eval_metta_stream` returns `[(Empty, $bindings)]` from a
+function body, `collapse` must decide:
+
+- Filter it the same way Errors get filtered? (i.e., `Empty` results
+  don't appear in the collapsed Vector)
+- Yield it as a literal `:Empty` element in the collapsed Vector?
+- Filter together with Errors via the same "no-success" branch in
+  the pseudocode?
+
+This is the **same shape of question as A** (error/success
+partitioning). An all-`Empty` collapse and an all-`Error` collapse
+are structurally identical: a stream with no Successes. The H-E
+behavior treats `Empty` as "absent from the stream" — sub-A's
+filter-on-Error branch is the natural place to also drop `Empty`.
+Decide together with A at step 4.
+
+(Note: `NotReducible` does NOT couple here despite looking similar.
+It's a grounded-dispatch protocol, fixable today, independent of
+streaming — see the protocol audit below.)
+
+## Evaluation-order policy: fixed-table, not type-metadata
+
+The spec's elementary-types section says metatypes (Atom, Symbol,
+Variable, Expression, Grounded) "affect the order of the expression
+evaluation," with `Atom` as the special signal for "don't reduce this
+argument." That's H-E's mechanism for letting **user-defined**
+functions be non-strict — declare `(: my-fn (-> Atom Atom))` and the
+first argument arrives unreduced.
+
+**PRIMUS does NOT honor this mechanism.** Probed it directly:
+
+```
+(: see-raw (-> Atom Atom))
+(= (see-raw $x) $x)
+(see-raw (+ 1 2))    →  3       (reduced eagerly)
+                        spec:    (+ 1 2)   (preserved)
+```
+
+But the accurate statement isn't "PRIMUS ignores type annotations
+for evaluation order" — that overclaims. PRIMUS *does* control
+evaluation order correctly: `if`, `eval`, `chain`, `unify`, `function`,
+`return`, `quote`, `match` all defer argument evaluation appropriately,
+because they're in the **fixed special-form dispatch table** at
+[`Eval.jl:50-97`](../src/eval/Eval.jl#L50-L97), checked BEFORE
+argument evaluation.
+
+The precise statement is:
+
+> **PRIMUS controls evaluation order via a fixed special-form table,
+> not via type metadata. The `Atom` meta-type is inert as an
+> evaluation-order signal.** Built-in non-strict forms (the special-
+> form table) work correctly; user-extensible non-strictness via
+> `(: my-fn (-> Atom ...))` silently doesn't.
+
+The gap boundary is clear: **anything in the special-form table is
+non-strict and conformant; anything that would need a *user-declared*
+non-strict function isn't.** Importers of H-E `.metta` programs:
+the programs that break are the ones that define their own non-strict
+functions via type annotations; the programs that use the built-in
+non-strict forms work fine.
+
+Connects to the eager-evaluator decision (`ea79fcd`): this is the
+*spec-level* description of the same choice. The eager decision is
+recorded as "stdlib uses single-guarded-clause + `if` discipline";
+the deeper version is "user-extensible non-strictness via metatypes
+isn't available in PRIMUS." Both true, the second one tells
+H-E-program-importers exactly what fails.
+
 ## Parser audit (main, not streaming-specific) — three-way split
 
 Two probes against the EBNF surfaced multiple tokenizer issues in one
@@ -377,6 +456,125 @@ is "all named constants," not just `Nil`, and the failure mode is
 silence. Class is the same as `fo"o`/`!42` (documented-behavior
 doesn't actually work) but the user-visibility is higher because
 named constants are a normal idiom, not a parser edge case.
+
+## Protocol + robustness + minimal-MeTTa audit (this session)
+
+Three findings from the special-results-and-minimal-MeTTa probe, each
+needing its own filing because the "missing error subtype" framing
+they came in under bundled items with very different shapes:
+
+### F. `NotReducible` as a grounded-dispatch protocol (cheap independent fix)
+
+Spec: "`NotReducible` — returns the unchanged function call instead."
+This is a **grounded-dispatch protocol**, not a streaming question.
+A grounded function returns the symbol `NotReducible` to signal
+"the interpreter should leave my call unreduced." Today PRIMUS treats
+`:NotReducible` as just a Symbol return — the evaluator passes it
+through, the original call is replaced by `:NotReducible` instead of
+preserved.
+
+**Fix is local and cheap**: at the grounded-dispatch site in
+[`Eval.jl:103-107`](../src/eval/Eval.jl#L103-L107), after a grounded
+call returns, check if the result is the `NotReducible` symbol — if
+so, return the original `expr` instead of the symbol. A few lines,
+no streaming dependency, no metatype/eager interaction.
+
+```julia
+# Currently:
+raw === nothing && return expr
+return raw isa String ? from_sexpr(raw) : ...
+
+# Add:
+raw === "NotReducible" && return expr   # or whatever the unparse form is
+```
+
+Independent of everything else. Land alongside the other parser-bug
+and `=` cleanup items when someone does a main-branch sweep.
+
+### G. No evaluator depth bound — divergent recursion crashes the host (robustness)
+
+Spec: "`StackOverflow` — returned by the interpreter when the stack
+depth is restricted and maximum depth is reached." This is the spec
+telling you H-E has an **evaluator-level depth bound** that catches
+divergent recursion and converts it into a catchable `(Error <expr>
+StackOverflow)` MeTTa atom.
+
+**PRIMUS lacks the depth bound.** Probed by writing the divergent
+factorial (two-clause base/recurse) and running under streaming — the
+result was a Julia-level `StackOverflowError`, not a MeTTa `(Error
+... StackOverflow)`. **In a self-modifying system that generates
+and evaluates its own atoms, an unbounded-recursion atom takes down
+the host eval loop rather than producing a catchable error.** That's
+the live crash risk this section's other items don't have.
+
+This is the **general backstop behind the per-rule stdlib discipline**.
+The stdlib hygiene fix (`4b2033f`) treats divergence per-rule by
+forcing single-guarded-clause discipline (factorial → `if`-guarded);
+the depth bound is what catches divergence the discipline misses —
+analogous to the evaluated-marker (section B) being the general fix
+for re-expansion under fan-out.
+
+**Priority is HIGHER than the other Error subtypes** because it's
+a robustness/crash item, not a feature gap. `IncorrectNumberOfArguments`
+and `BadArgType` not auto-generating means the program limps on with
+unreduced expressions — annoying, off-spec, recoverable.
+`StackOverflow` crashes. Fix: add a depth counter to `_eval_metta_one`
+(or whatever the eval entry point is post-streaming), bound it (default
+maybe 1000 levels?), return `(Error <original-atom> StackOverflow)`
+when the bound is hit. Independent of streaming — fix on main.
+
+Connects to the "self-modifying loop" framing the user has raised
+multiple times: until G lands, every step-4-and-beyond change has
+to be designed against "divergent recursion crashes the host," which
+constrains experimentation. After G lands, divergent recursion just
+errors and the loop survives.
+
+### H. Minimal MeTTa instruction inventory — 8/13 present, two pairs missing
+
+Inventory:
+
+| Instruction | Status | Where |
+|---|---|---|
+| `eval` | ✓ special form | [Eval.jl L62](../src/eval/Eval.jl#L62) |
+| `evalc` | ✓ special form (context arg ignored) | [Eval.jl L63](../src/eval/Eval.jl#L63) |
+| `chain` | ✓ special form | [Eval.jl L59](../src/eval/Eval.jl#L59) |
+| `unify` | ✓ special form | [Eval.jl L64](../src/eval/Eval.jl#L64) |
+| `decons-atom` | ✓ grounded | AtomOps.jl |
+| `cons-atom` | ✓ grounded | Primitives.jl |
+| `function` | ✓ special form | [Eval.jl L60](../src/eval/Eval.jl#L60) |
+| `return` | ✓ special form (uses `_ReturnValue` sentinel) | [Eval.jl L61](../src/eval/Eval.jl#L61) |
+| `collapse-bind` | ✗ MISSING | — |
+| `superpose-bind` | ✗ MISSING | — |
+| `metta` | ✗ MISSING | — |
+| `context-space` | ✗ MISSING | — |
+| `call-native` | N/A | Rust-only |
+
+The four missing split into **two pairs by why they're missing**, and
+the distinction matters because they live at different parts of the
+roadmap:
+
+**`collapse-bind` / `superpose-bind` — step-4 deliverable, not generic
+"to-do"**: these are precisely the **`(atom, bindings)` pair-stream
+primitives** that step 1+3 introduces. Their absence today is exactly
+what step 4 is building. Their **presence is a step-4 completion
+signal** — when step 4 lands, `collapse-bind` and `superpose-bind`
+should land with it as the canonical pair-stream API (PRIMUS's
+existing `collapse`/`superpose` are the bare-Vector versions; the
+`-bind` variants carry bindings per element).
+
+**`metta` / `context-space` — deferred self-hosting prerequisite**:
+these enable a MeTTa program to invoke the interpreter on a different
+atom in a different context space, and to query the current
+interpreter's working space. Required for any program that wants to
+*host* its own interpreter — the spec footnote: "It is possible to
+implement MeTTa interpreter in minimal MeTTa." Without these, PRIMUS
+can't be its own host language for a MeTTa-defined interpreter. Not
+needed for any current work; record as deferred until self-hosting
+becomes a goal.
+
+So when step 4 wraps up, the inventory becomes 10/13 (the bind-pair
+landing with streaming). The remaining 2 (metta/context-space) are
+their own track.
 
 ## Meta-rule: the single-to-stream caller-audit pattern
 
