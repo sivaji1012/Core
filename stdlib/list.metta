@@ -2,8 +2,8 @@
 ;
 ; CRITICAL NOTE: this is NOT the H-E / canonical-MeTTa idiom. H-E uses
 ; lazy + interleaved reduction, which makes the cons-pair (\$h . \$t)
-; destructuring pattern + CPS helpers (if-decons-expr, if-error, etc.)
-; the natural style. PRIMUS's evaluator is EAGER:
+; destructuring pattern + lazy-CPS helpers (the function/chain/unify/return
+; style) the natural style. PRIMUS's evaluator is EAGER:
 ;   - the rewriter pre-evaluates rule arguments before the rule fires
 ;   - the parser treats (\$h . \$t) as a 3-element literal vector
 ;     [\$h, :., \$t], not as a cons destructuring pattern

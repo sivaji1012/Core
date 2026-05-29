@@ -13,10 +13,7 @@
 (: if (-> Bool Atom Atom $t))
 (: if-equal (-> Atom Atom Atom Atom %Undefined%))
 (: noeval (-> Atom Atom))
-(: atom-subst (-> Atom Variable Atom Atom))
-(: if-decons-expr (-> Expression Variable Variable Atom Atom %Undefined%))
 (: if-error (-> Atom Atom Atom %Undefined%))
-(: return-on-error (-> Atom Atom %Undefined%))
 (: ErrorType Type)
 (: Error (-> Atom Atom ErrorType))
 (: Empty (-> Atom))
@@ -42,39 +39,36 @@
 
 (= (noeval $x) $x)
 
-(= (atom-subst $atom $var $templ)
-   (function
-     (chain (eval (noeval $atom)) $var
-       (return $templ))))
-
 ; ── Error handling ────────────────────────────────────────────────────────────
-; Per CeTTa stdlib.metta §Error handling and hyperon-experimental
+;
+; if-error — eager rewrite of H-E's CPS helper. The previous version used
+; function/chain/unify/return — H-E's lazy CPS style. Under PRIMUS's eager
+; evaluator the unevaluated-branch property of those helpers doesn't hold
+; (rule arguments are pre-evaluated before the rule body fires), so the
+; CPS form returned garbage. The eager rewrite uses `if` — the one
+; construct that IS lazy in branches in this interpreter — and grounded
+; get-metatype/car-atom for structural inspection.
+;
+; SEMANTIC DIVERGENCE FROM H-E: the result is correct (returns $then on
+; Error, $else otherwise) but the branches are NOT lazy. Both $then and
+; $else are evaluated when if-error is called (they're rule arguments).
+; Programs that relied on H-E's lazy short-circuit to skip costly work
+; on the unselected branch will still run that work under PRIMUS. This
+; is the eager-evaluator decision (see commit history / project notes);
+; full short-circuit would require making if-error a special form.
+;
+; Removed alongside the H-E CPS layer (all unused in this tree, found
+; via grep across stdlib + src + test + lib):
+;   atom-subst        — internal plumbing, never API surface
+;   return-on-error   — trivially `(if-error $r $r $next)` if needed
+;   if-decons-expr    — internal plumbing; use `decons-atom` + `if` directly
 
 (= (if-error $atom $then $else)
-   (function
-     (eval
-       (if-equal $atom ()
-         (return $else)
-         (chain (decons-atom $atom) $list
-           (unify $list ($head $tail)
-             (eval (if-equal $head Error (return $then) (return $else)))
-             (return $else)))))))
-
-(= (return-on-error $result $next)
-   (if-error $result $result $next))
-
-; ── Expression deconstruction helpers ────────────────────────────────────────
-; Per CeTTa stdlib.metta lines 379-388
-
-(= (if-decons-expr $atom $head $tail $then $else)
-   (function
-     (eval
-       (if-equal $atom ()
-         (return $else)
-         (chain (decons-atom $atom) $list
-           (unify $list ($head $tail)
-             (return $then)
-             (return $else)))))))
+   (if (== (get-metatype $atom) Expression)
+       (if (== (car-atom $atom) Error)
+           $then
+           $else)
+       $else))
 
 ; ── Type predicates (MeTTa-level wrappers) ───────────────────────────────────
 ; Grounded: get-metatype, is-number, is-symbol, is-variable, is-expression
