@@ -126,6 +126,14 @@ function _eval_metta_bounded(@nospecialize(expr), space::CoreSpace) :: Any
     head === Symbol("get-atoms")   && return core_atoms(space)
     head === Symbol("new-space")   && return new_core_space()
     head === Symbol("get-type-space") && return _eval_get_type_space(args, space)
+    # get-type is dispatched as a special form (rather than the grounded
+    # version registered in Primitives.jl) so it can consult the space for
+    # `(: atom type)` declarations BEFORE falling back to structural inference.
+    # Closes the three-oracle disagreement (get-type vs get-type-space vs
+    # type-cast) for the common single-declaration case. Multi-typed atoms
+    # still return only the first declared type — the multi-valued behavior
+    # is the step-4 (streaming) consumer-migration item per resume notes.
+    head === Symbol("get-type")    && return _eval_get_type(args, space)
     head === Symbol("add-reduct")     && return _eval_add_reduct(args, space)
     head === Symbol("for-each-in-atom") && return _eval_for_each(args, space)
     # Higher-order atom ops — body arg must NOT be pre-evaluated (special forms)
@@ -730,6 +738,43 @@ function _eval_get_type_space(args::Vector, space::CoreSpace)
     matches = core_match(space, [Symbol(":"), atom, Symbol("\$t")])
     isempty(matches) ? Symbol("%Undefined%") :
         (matches[1] isa Vector && length(matches[1]) >= 3 ? matches[1][3] : Symbol("%Undefined%"))
+end
+
+"""
+    _eval_get_type(args, space) → Symbol
+
+Special-form implementation of `(get-type \$atom)`. Resolves the type by:
+  1. Querying the space for `(: \$atom \$t)` declarations — declared types win.
+  2. Falling back to structural inference if no declaration exists.
+
+Closes the historic three-oracle disagreement on declared-but-non-structural
+atoms — previously `get-type` ignored declarations and returned the
+structural type, disagreeing with `get-type-space` and `type-cast`'s
+inferred result.
+
+First-declaration-wins matches `get-type-space` (single-valued). Under
+streaming `=`, this should become multi-valued (stream of declared types),
+but that's a downstream consumer migration tracked in the resume notes.
+"""
+function _eval_get_type(args::Vector, space::CoreSpace)
+    isempty(args) && return Symbol("%Undefined%")
+    atom = eval_metta(args[1], space)
+    # Step 1 — query declared types from the space
+    matches = core_match(space, [Symbol(":"), atom, Symbol("\$t")])
+    if !isempty(matches) && matches[1] isa Vector && length(matches[1]) >= 3
+        return matches[1][3]
+    end
+    # Step 2 — fall back to structural inference (same logic as the grounded
+    # registration in Primitives.jl, kept in sync with that policy choice).
+    atom_s = to_sexpr_atom(atom)
+    s = strip(atom_s)
+    tryparse(Int, s) !== nothing     && return Symbol("Number")
+    tryparse(Float64, s) !== nothing && return Symbol("Number")
+    (s == "True" || s == "False" || s == "true" || s == "false") && return Symbol("Bool")
+    startswith(s, "\"") && return Symbol("String")
+    startswith(s, "(")  && return Symbol("Expression")
+    startswith(s, "\$") && return Symbol("Variable")
+    Symbol("Symbol")
 end
 
 function _eval_add_reduct(args::Vector, space::CoreSpace)
