@@ -15,13 +15,50 @@ function default_space() :: CoreSpace
     _DEFAULT_SPACE[]
 end
 
+# ── Evaluator depth bound ─────────────────────────────────────────────────────
+# Per MeTTa spec, divergent recursion should return `(Error <expr> StackOverflow)`
+# rather than crashing the host evaluator. Previously PRIMUS threw a Julia
+# StackOverflowError on divergent input (factorial-with-no-base-case under
+# streaming, badly written user rules, etc.), which takes down the whole
+# eval loop and is unsafe in any self-modifying runtime that generates and
+# evaluates its own atoms.
+#
+# Two protections in layers:
+#  1. Soft counter bound (`_EVAL_DEPTH_BOUND`) catches divergence early —
+#     1000 MeTTa levels is well within Julia's default stack and gives
+#     terminating-but-deeply-nested programs plenty of room.
+#  2. StackOverflowError catch is a backstop for cases where (a) the bound
+#     is set too high, (b) a grounded function or unify call adds extra
+#     Julia frames per MeTTa level, or (c) Julia is launched with a
+#     reduced stack size. The host loop survives regardless.
+const _EVAL_DEPTH_BOUND = 1_000
+const _EVAL_DEPTH = Ref{Int}(0)
+
 """
     eval_metta(expr, space=default_space()) → Any
 
 Evaluate a MeTTa expression (Julia value) against a CoreSpace.
 Returns the reduced result or the expression itself if no rule fires.
+
+Bounded by `_EVAL_DEPTH_BOUND` (soft) and a Julia `StackOverflowError`
+catch (hard backstop). On either, returns the spec-conformant
+`(Error <expr> StackOverflow)` atom instead of crashing the host.
 """
 function eval_metta(@nospecialize(expr), space::CoreSpace = default_space()) :: Any
+    _EVAL_DEPTH[] >= _EVAL_DEPTH_BOUND &&
+        return Any[Symbol("Error"), expr, Symbol("StackOverflow")]
+    _EVAL_DEPTH[] += 1
+    try
+        return _eval_metta_bounded(expr, space)
+    catch e
+        e isa StackOverflowError && return Any[Symbol("Error"), expr, Symbol("StackOverflow")]
+        rethrow(e)
+    finally
+        _EVAL_DEPTH[] -= 1
+    end
+end
+
+function _eval_metta_bounded(@nospecialize(expr), space::CoreSpace) :: Any
     # Variable — return as-is (bindings handled by caller)
     expr isa Symbol && startswith(string(expr), "\$") && return expr
 
