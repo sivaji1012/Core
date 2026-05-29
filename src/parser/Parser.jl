@@ -40,7 +40,8 @@ function tokenize(source::AbstractString)::Vector{String}
             continue
         end
         
-        # Strings
+        # Strings — `"` at HEAD position opens a string. Internal `"` inside
+        # a non-string atom (e.g. fo"o) is handled by the atom branch below.
         if c == '"'
             j = i + 1
             while j <= n && chars[j] != '"'
@@ -50,11 +51,15 @@ function tokenize(source::AbstractString)::Vector{String}
                     j += 1
                 end
             end
+            # ROBUSTNESS: detect unterminated string before slicing past end.
+            # Per parser invariant: a parser should never throw a BoundsError;
+            # it should produce a parse error on malformed input.
+            j > n && error("Unterminated string literal starting at char $i")
             push!(tokens, String(chars[i:j]))
             i = j + 1
             continue
         end
-        
+
         # Variables ($x)
         if c == '$'
             j = i + 1
@@ -65,16 +70,20 @@ function tokenize(source::AbstractString)::Vector{String}
             i = j
             continue
         end
-        
-        # Atoms/numbers/symbols (including Unicode)
+
+        # Atoms/numbers/symbols (including Unicode).
+        # Per EBNF: WORD ::= (CHAR | '#'), {CHAR | '"' | '#'} — `"` is permitted
+        # in symbol BODIES (after the head), just not as the head (the head-`"`
+        # case opens a string and is handled above). So the body-exclusion set
+        # is {'(', ')'} (terminators) plus whitespace, NOT `"`.
         j = i
-        while j <= n && !isspace(chars[j]) && chars[j] ∉ ('(', ')', '"')
+        while j <= n && !isspace(chars[j]) && chars[j] ∉ ('(', ')')
             j += 1
         end
         push!(tokens, String(chars[i:j-1]))
         i = j
     end
-    
+
     return tokens
 end
 
