@@ -606,18 +606,43 @@ function _unify(@nospecialize(pattern), @nospecialize(value)) :: Union{Dict{Symb
 end
 
 function _unify!(@nospecialize(pat), @nospecialize(val), b::Dict{Symbol,Any}) :: Bool
-    # Handle both $x and __var_x forms for variables
-    pat_str = pat isa Symbol ? string(pat) : ""
-    is_var  = startswith(pat_str, "\$") || startswith(pat_str, "__var_")
-    if pat isa Symbol && is_var
-        vname = startswith(pat_str, "__var_") ?
-                Symbol("\$" * pat_str[7:end]) :
-                Symbol(pat_str[2:end])
+    # Symmetric variable handling per MeTTa spec match_atoms: a variable on
+    # either side binds to the other side. Previously PRIMUS only checked
+    # the pat (first) position, so calls like
+    #   _unify(42, $y)  →  failed
+    # would skip the binding-creation branch even though $y is a free var
+    # that should bind to 42. This broke the canonical
+    #   (unify atom (quote $y) then else)  →  bind $y, take then
+    # idiom because $y sits in val position after pattern descent.
+
+    # Pat-is-var (original behavior)
+    if pat isa Symbol
+        pat_str = string(pat)
+        if startswith(pat_str, "\$") || startswith(pat_str, "__var_")
+            vname = startswith(pat_str, "__var_") ?
+                    Symbol("\$" * pat_str[7:end]) :
+                    Symbol(pat_str[2:end])
             existing = get(b, vname, nothing)
-        existing !== nothing && return existing == val
-        b[vname] = val
-        return true
+            existing !== nothing && return existing == val
+            b[vname] = val
+            return true
+        end
     end
+
+    # Symmetric: val-is-var (new — fixes the unify-against-quoted-pattern case)
+    if val isa Symbol
+        val_str = string(val)
+        if startswith(val_str, "\$") || startswith(val_str, "__var_")
+            vname = startswith(val_str, "__var_") ?
+                    Symbol("\$" * val_str[7:end]) :
+                    Symbol(val_str[2:end])
+            existing = get(b, vname, nothing)
+            existing !== nothing && return existing == pat
+            b[vname] = pat
+            return true
+        end
+    end
+
     pat == val && return true
     (pat isa Vector && val isa Vector) || return false
     length(pat) == length(val) || return false
@@ -732,10 +757,20 @@ function _eval_eval(args::Vector, space::CoreSpace)
 end
 
 function _eval_unify(args::Vector, space::CoreSpace)
-    # (unify atom pattern then else) — 4-arg canonical form
+    # (unify atom pattern then else) — 4-arg canonical form per spec.
+    # NEITHER atom nor pattern is evaluated — per the spec's match_atoms,
+    # both sides match structurally as-is. The caller is responsible for
+    # putting `atom` in the form they want to match against (typically via
+    # chain's binding substitution, which already evaluated the value).
+    # Previously PRIMUS evaluated both, which collapsed wrappers like
+    # `(quote $y)` to bare `$y` and stripped quote-wrappers off computed
+    # values — breaking the canonical
+    #   (chain (quote (quote 42)) $x (unify $x (quote $y) $y else))
+    # idiom because `$x` resolved to `(quote 42)` then evaluation stripped
+    # the quote wrapper to bare `42`, which can't unify with `(quote $y)`.
     length(args) < 4 && return nothing
-    a = eval_metta(args[1], space)
-    b = eval_metta(args[2], space)
+    a = args[1]   # ATOM — structural
+    b = args[2]   # PATTERN — structural
     bindings = _unify(a, b)
     if bindings !== nothing
         eval_metta(_apply_bindings(args[3], bindings), space)
