@@ -138,28 +138,114 @@ than Julia `isa` — remains genuinely deferrable. PRIMUS's `isa Symbol`/
 `isa Vector` collapses to the same behavior for the cases that matter
 in streaming. Don't bundle it with the evaluated-marker work.)
 
-## Known parser issue (main, not streaming-specific)
+## Parser audit (main, not streaming-specific) — three-way split
 
-`run_metta`'s `!` directive parser silently strips `!` on non-Vector
-atoms. As of `31282e6`:
+Two probes against the EBNF surfaced multiple tokenizer issues in one
+session, which is itself the signal worth recording: **the tokenizer
+has unaudited edge cases that fail badly when hit**. Cluster the
+findings by what energy each needs — *fix*, *decide*, or *audit* — not
+by surface symptom, so resume-you reads each item with the right
+intent.
+
+### A. Parser bugs to fix (go-fix energy)
+
+These produce silent-drops or crashes on grammar-legal input. Independent
+of streaming. Two findings, each with sub-fixes:
+
+**A.1 — `fo"o` (symbol with internal `"`) crashes with `BoundsError`**
 
 ```
-!(+ 1 2)        → Any[3]              ✓
-!42             → Any[]                ✗ should be Any[42]
-!$x             → Any[]                ✗ should be Any[$x]
-!bare-symbol    → Any[]                ✗ should be Any[:bare-symbol]
+parse_metta("fo\"o")   →  BoundsError: attempt to access 4-element Vector{Char}
 ```
 
-The exec directive at run_metta only triggers when the parsed
-expression is a Vector with `!` head; bare atoms preceded by `!`
-don't form a Vector and so `parse_metta` either drops the `!` or
-returns nothing.
+Per EBNF, `WORD ::= (CHAR | '#'), {CHAR | '"' | '#'}` — `"` is
+explicitly permitted in symbol BODIES (after the first char). PRIMUS's
+atom tokenizer at [Parser.jl:71](../src/parser/Parser.jl#L71) excludes
+`"` from atom-mode, splits at the internal `"`, then enters string mode
+on the unterminated `"o` remainder. The string-mode loop walks off the
+end and the subsequent `chars[i:j]` BoundsErrors at
+[Parser.jl:53](../src/parser/Parser.jl#L53).
 
-Workaround for probe testing: wrap the atom — `!(quote 42)`,
-`!(noeval bare-symbol)`. But it's a real bug for `.metta` files
-with a top-level `!my-var` that resolves to a bare symbol — silence
-instead of evaluation. Fix is in `parse_metta`'s `!`-prefix
-handling, not in `eval_metta`. Low priority, no streaming dependency.
+This is TWO bugs hiding in one symptom:
+
+- **Policy bug** — `"` should be a WORD char per the EBNF, but only in
+  the body, not the head. The fix is *positional*: leading `"` opens
+  string mode (current behavior, correct); non-leading `"` continues
+  the WORD (currently exits — wrong). The variable loop at
+  [Parser.jl:61](../src/parser/Parser.jl#L61) already does the
+  conformant thing by accident (it doesn't special-case `"` at all,
+  so `$fo"o` works). When fixing, trace these three together to
+  confirm the positional rule holds:
+  - `"hello"`     — leading `"` → string mode      (must keep)
+  - `fo"o`        — internal `"` → symbol body    (currently crashes)
+  - `foo`         — no `"` at all → symbol         (must keep)
+
+- **Robustness bug** — even if you don't adopt the EBNF policy, the
+  string-mode loop walking off the end without a terminator check is
+  its own bug. **A parser should never `BoundsError`; it should produce
+  a parse error.** In a self-modifying system that generates and
+  re-parses its own atoms, a parser that *throws* on malformed input
+  is a latent crash in the reflective loop. Fix the terminator check
+  regardless of the policy decision.
+
+**A.2 — `!42` / `!$x` / `!bare-symbol` silently drop (the seam)**
+
+```
+!(+ 1 2)        → Any[3]               ✓ (directive on Expression)
+!name           → Any[Symbol("!name")] ✓ (HE artifact — `!`-prefix symbol)
+!42             → Any[]                ✗ silently dropped
+!$x             → Any[]                ✗ silently dropped
+!bare-symbol    → Any[]                ✗ silently dropped
+```
+
+Not three separate behaviors of one feature — TWO features (`!name`
+the symbol-with-`!`-prefix per the EBNF artifact note, and `!(expr)`
+the exec directive on Expression) with an **unhandled seam** between
+them. `!42` falls in the seam between "no space, so `!` is a symbol
+prefix" and "followed by `(`, so it's a directive." The fix isn't
+"make `!42` work" — that presumes an answer. The fix is **decide what
+`!42` means** (directive on a literal? error? something else?) and
+handle that case explicitly. Same for `!$x` and `!bare-symbol`.
+
+### B. Conformance divergences to decide (go-decide energy, NOT bugs)
+
+**`True` / `False` parse as Julia `true` / `false`** instead of Symbol
+of type Bool. The EBNF delegates `True`-construction to the tokenizer
+(see the spec's footer: tokenizer is `(<regex>, <constructor>)` pairs;
+`([0-9]+, <int parser>)` is its example). PRIMUS just has an extra
+entry that maps `true|True|false|False` to Julia Bool — a **legal
+tokenizer choice**, just different from H-E's "construct Symbol of
+type Bool" choice. This is not a bug; it's a tokenizer-table policy
+divergence. The decision is whether to keep PRIMUS's choice (simpler
+Julia interop, type info lives in the Bool Julia type) or migrate to
+H-E's (Symbol-of-Bool-type, type info lives in the type system).
+Doesn't belong in cluster A above — conflating it would make
+resume-you treat a deliberate choice as a defect.
+
+### C. Meta-finding (the audit, single pass)
+
+The atom-mode loop excludes `"` (crashes on `fo"o`); the variable-mode
+loop doesn't (`$fo"o` works); neither was written against the EBNF
+char classes. The two loops disagree on `"` by ACCIDENT, not design —
+the variable loop is accidentally EBNF-conformant and the atom loop is
+accidentally crash-prone. There may be other char-class disagreements
+between them that no probe has hit yet.
+
+**Fix as one derived-from-grammar pass**, not three separate patches:
+
+- Audit `tokenize`'s atom-mode, variable-mode, and string-mode loops
+  against the EBNF `CHAR`/`WORD`/`STRING` productions
+- Derive each loop's exclusion set from the grammar, not from
+  reverse-engineered intuition
+- Add the string-mode terminator check while you're in there
+- Decide and implement the `!`-seam behavior at the same time
+
+This is one ~half-day of work that closes A.1, A.2, and prevents future
+"another tokenizer edge case crashes" findings. Doing it as three
+separate patches will surface a fourth case later. Low priority overall
+(no streaming dependency) but **higher priority than `!42` alone**
+because the robustness sub-bug in A.1 means malformed input crashes
+the parser, not just produces wrong output.
 
 ## Meta-rule: the single-to-stream caller-audit pattern
 
