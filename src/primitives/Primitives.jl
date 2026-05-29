@@ -310,9 +310,14 @@ function _register_type_ops!()
     MORK.register_grounded!("match-types", args -> begin
         length(args) < 4 && return nothing
         t1, t2, yes, no = args[1], args[2], args[3], args[4]
-        # Per MeTTa spec: %Undefined% or Atom on either side → match.
-        # Specific types match only if equal.
-        matches = (t1 == "%Undefined%" || t2 == "%Undefined%") || t1 == t2
+        # Per MeTTa spec match_types:
+        #   if t1 == %Undefined% or t1 == Atom or t2 == %Undefined% or t2 == Atom:
+        #       return [bindings]
+        #   else return match_atoms(t1, t2)
+        # Five universal short-circuits (four meta-type cases + structural equality).
+        matches = (t1 == "%Undefined%" || t1 == "Atom" ||
+                   t2 == "%Undefined%" || t2 == "Atom" ||
+                   t1 == t2)
         matches ? yes : no
     end)
 
