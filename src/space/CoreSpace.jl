@@ -22,12 +22,28 @@ function to_sexpr(x::Any) :: String
         startswith(s, "\$") && return "__var_" * s[2:end]
         return s
     end
-    x isa String  && return x
+    x isa String  && return x   # passthrough: String input is treated as raw S-expr by core_add!/core_remove!
     x isa Bool    && return x ? "True" : "False"   # must precede Number (Bool <: Integer)
     x isa Number  && return string(x)
     x isa Tuple   && return "($(join(to_sexpr.(x), " ")))"   # Tuple same as Vector
     x isa Vector  && return "($(join(to_sexpr.(x), " ")))"
     string(x)
+end
+
+"""
+    to_sexpr_atom(x) → String
+
+Like `to_sexpr` but for the *grounded-dispatch* boundary: Julia String values
+are treated as MeTTa string literals (quoted, escape_string'd) so primitives
+like `get-type`, `type-cast`, `is-symbol` can distinguish "hi" from the
+symbol `:hi`.
+
+`to_sexpr` itself preserves the legacy raw-S-expr passthrough semantics for
+String inputs (used by `core_add!`/`core_remove!`).
+"""
+function to_sexpr_atom(x::Any) :: String
+    x isa String && return "\"" * escape_string(x) * "\""
+    to_sexpr(x)
 end
 
 """
@@ -41,7 +57,7 @@ function to_sexpr_query(x::Any) :: String
         startswith(s, "__var_") && return "\$" * s[7:end]
         return s   # $x stays as-is — MORK parses it as a wildcard variable
     end
-    x isa String  && return x
+    x isa String  && return x   # passthrough — query patterns may contain raw S-expr fragments
     x isa Bool    && return x ? "True" : "False"   # must precede Number (Bool <: Integer)
     x isa Number  && return string(x)
     x isa Vector  && return "($(join(to_sexpr_query.(x), " ")))"
@@ -55,6 +71,11 @@ function from_sexpr(s::String) :: Any
     isempty(s) && return nothing
     s == "True"  && return true
     s == "False" && return false
+
+    # String literal — preserves type tag from to_sexpr round-trip
+    if startswith(s, "\"") && endswith(s, "\"") && length(s) >= 2
+        return unescape_string(s[2:end-1])
+    end
 
     n = tryparse(Int, s);     n !== nothing && return n
     n = tryparse(Float64, s); n !== nothing && return n
@@ -78,11 +99,24 @@ export _tokenise
 _tokenise(s::AbstractString) = _tokenise(String(s))
 function _tokenise(s::String) :: Vector{String}
     tokens = String[]; depth = 0; start = 1; i = 1
+    in_str = false
     while i <= length(s)
         c = s[i]
-        if     c == '(';       depth += 1
-        elseif c == ')';       depth -= 1
-               if depth == 0; push!(tokens, strip(s[start:i])); start = i + 1; end
+        if in_str
+            # Inside a quoted string: only an unescaped " ends it
+            if c == '\\' && i + 1 <= length(s)
+                i += 2
+                continue
+            elseif c == '"'
+                in_str = false
+            end
+        elseif c == '"'
+            in_str = true
+        elseif c == '('
+            depth += 1
+        elseif c == ')'
+            depth -= 1
+            if depth == 0; push!(tokens, strip(s[start:i])); start = i + 1; end
         elseif isspace(c) && depth == 0
             tok = strip(s[start:i-1])
             !isempty(tok) && push!(tokens, tok)

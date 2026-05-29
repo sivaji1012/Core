@@ -99,7 +99,7 @@ function eval_metta(@nospecialize(expr), space::CoreSpace = default_space()) :: 
     # ── Grounded dispatch ─────────────────────────────────────────────────────
     if head isa Symbol && is_grounded(string(head))
         evaled_args = [eval_metta(a, space) for a in args]
-        str_args = to_sexpr.(evaled_args)
+        str_args = to_sexpr_atom.(evaled_args)   # quote-wraps String literals so primitives can tell "hi" from :hi
         raw = try GROUNDED_REGISTRY[string(head)](str_args)
               catch e; @warn "grounded call failed" name=head exception=e; nothing; end
         raw === nothing && return expr
