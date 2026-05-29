@@ -52,6 +52,7 @@ using AdaptiveCompression
 
 include("space/CoreSpace.jl")
 include("space/CoreSpaceActIO.jl")   # Stage 1 .act lifecycle (snapshot / load / open_node! / close_node!)
+include("eq/Equality.jl")             # prototype: single atom_equal / alpha_rename for rewriter + =alpha
 include("parser/Parser.jl")
 include("primitives/Primitives.jl")
 include("primitives/AtomOps.jl")

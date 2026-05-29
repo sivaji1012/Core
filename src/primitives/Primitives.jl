@@ -212,9 +212,16 @@ function _register_equality_ops!()
     # =alpha: structural equality ignoring variable names
     # (=alpha (Father $X) (Father $Y)) → True  (same structure, vars renamed)
     # (=alpha (Father $X) (Son $X))   → False (different head)
+    # PROTOTYPE: delegate to MeTTaCore.atom_equal so this primitive and
+    # the rewriter's `_unify!` share one source of truth for alpha-
+    # equivalence. The old `_alpha_eq(::String, ::String)` path is still
+    # below (used by nothing else on this branch) and will be removed
+    # when the consolidation is committed to main.
     MORK.register_grounded!("=alpha", args -> begin
         length(args) < 2 && return "False"
-        _alpha_eq(args[1], args[2]) ? "True" : "False"
+        a = MeTTaCore.from_sexpr(args[1])
+        b = MeTTaCore.from_sexpr(args[2])
+        MeTTaCore.atom_equal(a, b) ? "True" : "False"
     end)
 
     # noreduce-eq: structural equality WITHOUT evaluating args.

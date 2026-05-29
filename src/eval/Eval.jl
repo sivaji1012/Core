@@ -15,13 +15,103 @@ function default_space() :: CoreSpace
     _DEFAULT_SPACE[]
 end
 
+# ── PROTOTYPE branch instrumentation ─────────────────────────────────────────
+# The branch's job is to surface the semantic set, not resolve it. This log
+# captures every place the loud `eval_metta` adapter sees a multi-result
+# stream from `eval_metta_stream` and is forced to throw away cardinality.
+# Each entry is the inventory of "callsites that were quietly assuming
+# determinism." That list is the real output of running the 124 tests —
+# the green/red count is secondary.
+#
+# Use `reset_multi_result_log!()` before a test run and inspect the log
+# afterwards via `multi_result_log()`. The adapter itself never throws;
+# it logs and returns the first element so the existing single-result
+# contract is preserved.
+
+const MULTI_RESULT_LOG = Vector{NamedTuple{(:expr, :count, :results),
+                                            Tuple{Any, Int, Vector{Any}}}}()
+
+reset_multi_result_log!() = empty!(MULTI_RESULT_LOG)
+multi_result_log() = copy(MULTI_RESULT_LOG)
+
 """
     eval_metta(expr, space=default_space()) → Any
 
-Evaluate a MeTTa expression (Julia value) against a CoreSpace.
-Returns the reduced result or the expression itself if no rule fires.
+Adapter wrapping `eval_metta_stream`. The stream form is canonical; this
+adapter exists to keep the single-result contract that callsites across
+the project still expect.
+
+When the underlying stream returns more than one result, the adapter
+*logs the call site* into MULTI_RESULT_LOG and returns the first element
+without raising. The log entry is what tells us the callsite was quietly
+assuming determinism — those are exactly the places we need to migrate
+to stream-aware consumers next.
 """
 function eval_metta(@nospecialize(expr), space::CoreSpace = default_space()) :: Any
+    results = eval_metta_stream(expr, space)
+    isempty(results) && return nothing
+    if length(results) > 1
+        push!(MULTI_RESULT_LOG, (expr = expr, count = length(results), results = copy(results)))
+    end
+    results[1]
+end
+
+"""
+    eval_metta_stream(expr, space) → Vector{Any}
+
+Canonical, stream-returning evaluator. A deterministic reduction comes
+back as a 1-element vector. A non-deterministic reduction (multiple
+rules with the same head firing, `match` returning many bindings) comes
+back as an n-element vector.
+
+The contract: every position in the returned vector is one *result* of
+evaluating `expr`. A position that is itself a Vector is one result that
+happens to be an expression (e.g. `(p 7)`), not a sub-stream — exactly
+the discipline `_eval_match_all` already follows.
+
+Today only the rule-rewriting branch produces n > 1 (multiple `(= h …)`
+rules with the same head). The eventual goal is to thread the stream
+through grounded args and special-form bodies too, but that's the next
+branch — this prototype is intentionally narrow.
+"""
+# Sentinel wrapper used by the rule-rewriter ONLY when it has genuinely
+# enumerated multiple matching rules. Anything else flowing back through
+# the dispatch returns a plain value; the stream wrapper below lifts a
+# plain value to `Any[v]` and unwraps a `_StreamResult` to its `.elems`.
+struct _StreamResult
+    elems :: Vector{Any}
+end
+
+function eval_metta_stream(@nospecialize(expr), space::CoreSpace = default_space()) :: Vector{Any}
+    r = _eval_metta_one(expr, space)
+    r isa _StreamResult ? r.elems : Any[r]
+end
+
+# Stream form for the rewriter: enumerate ALL matching rules instead of
+# returning on the first. Returns a `_StreamResult` so the top-level
+# `eval_metta_stream` can hand it back unwrapped.
+function _rule_rewrite_stream(head::Symbol, evaled_args::Vector, space::CoreSpace) :: Any
+    rules = core_rules(space, head)
+    results = Any[]
+    for (head_params, body) in rules
+        bindings = _unify_args(head_params, evaled_args)
+        bindings === nothing && continue
+        # NOTE: still calling single-result eval_metta on the body for
+        # this prototype. Threading stream through body evaluation is
+        # the next iteration — see the multi-result log to see which
+        # callsites in bodies would surface a stream.
+        push!(results, eval_metta(_apply_bindings(body, bindings), space))
+    end
+    isempty(results) && return vcat([head], evaled_args)   # no rule matched — irreducible expression
+    length(results) == 1 && return results[1]              # deterministic — bare value
+    return _StreamResult(results)                          # genuinely nondeterministic
+end
+
+# Original dispatch body, renamed. Returns either a value (single result)
+# or a `_StreamResult` (the rewriter went nondeterministic). The wrapper
+# `eval_metta_stream` above translates either into the canonical
+# Vector{Any} return.
+function _eval_metta_one(@nospecialize(expr), space::CoreSpace = default_space()) :: Any
     # Variable — return as-is (bindings handled by caller)
     expr isa Symbol && startswith(string(expr), "\$") && return expr
 
@@ -108,17 +198,13 @@ function eval_metta(@nospecialize(expr), space::CoreSpace = default_space()) :: 
     end
 
     # ── Rule rewriting ────────────────────────────────────────────────────────
+    # PROTOTYPE: route through _rule_rewrite_stream which enumerates ALL
+    # matching rules and returns a `_StreamResult` when n > 1. The
+    # `eval_metta` adapter (this function's caller, via eval_metta_stream)
+    # logs and unwraps; `_eval_collapse` consumes the stream directly.
     if head isa Symbol
         evaled_args = [eval_metta(a, space) for a in args]
-        rules = core_rules(space, head)
-        for (head_params, body) in rules
-            bindings = _unify_args(head_params, evaled_args)
-            bindings === nothing && continue
-            result = eval_metta(_apply_bindings(body, bindings), space)
-            return result
-        end
-        # No rule matched — return as reduced expression
-        return vcat([head], evaled_args)
+        return _rule_rewrite_stream(head, evaled_args, space)
     end
 
     expr
@@ -202,9 +288,14 @@ function _eval_let(args::Vector, space::CoreSpace)
     var  = args[1]
     val  = eval_metta(args[2], space)
     body = args[3]
-    bindings = var isa Symbol && startswith(string(var), "\$") ?
-               Dict{Symbol, Any}(Symbol(string(var)[2:end]) => val) :
-               Dict{Symbol, Any}()
+    # PROTOTYPE: route through `_var_name` (now canonical) so source-parsed
+    # `__var_x` and explicit `\$x` end up with the same dict key. Pre-prototype,
+    # this case only handled `\$x` form AND keyed without the leading `\$`,
+    # which both inconsistent and broke any `let` whose body came in as
+    # `__var_` from a round-trip through storage.
+    vname = _var_name(var)
+    bindings = vname === nothing ? Dict{Symbol,Any}() :
+                                   Dict{Symbol,Any}(vname => val)
     eval_metta(_apply_bindings(body, bindings), space)
 end
 
@@ -216,18 +307,14 @@ function _eval_if(args::Vector, space::CoreSpace)
 end
 
 function _eval_collapse(args::Vector, space::CoreSpace)
-    isempty(args) && return []
-    inner = args[1]
-    # Gather nondeterministic results WITHOUT match's single-result unwrap, so a
-    # lone result that is itself an expression (e.g. a `($r $c)` tuple) stays one
-    # element instead of being mistaken for the results list (the field values).
-    if inner isa Vector && !isempty(inner)
-        h = inner[1]
-        (h === :match || h === Symbol("match")) && return _eval_match_all(inner[2:end], space)
-        h === :superpose && return _eval_superpose(inner[2:end], space)
-    end
-    result = eval_metta(inner, space)
-    result isa Vector ? result : [result]
+    # After threading stream-eval through the rewriter, collapse becomes a
+    # pass-through: the substrate already produces a `Vector{Any}` of all
+    # results, and collapse is just the API for asking for it. The 13-line
+    # special-casing for `(collapse (match …))` / `(collapse (superpose …))`
+    # that used to live here was reconstructing cardinality the rewriter
+    # was discarding — that work has moved into `_rule_rewrite_stream`.
+    isempty(args) && return Any[]
+    eval_metta_stream(args[1], space)
 end
 
 function _eval_superpose(args::Vector, space::CoreSpace)
@@ -381,19 +468,20 @@ function _unify(@nospecialize(pattern), @nospecialize(value)) :: Union{Dict{Symb
 end
 
 function _unify!(@nospecialize(pat), @nospecialize(val), b::Dict{Symbol,Any}) :: Bool
-    # Handle both $x and __var_x forms for variables
-    pat_str = pat isa Symbol ? string(pat) : ""
-    is_var  = startswith(pat_str, "\$") || startswith(pat_str, "__var_")
-    if pat isa Symbol && is_var
-        vname = startswith(pat_str, "__var_") ?
-                Symbol("\$" * pat_str[7:end]) :
-                Symbol(pat_str[2:end])
-            existing = get(b, vname, nothing)
-        existing !== nothing && return existing == val
+    # PROTOTYPE: canonicalise variable keys through `_canonical_var` so
+    # `$x` and `__var_x` route to the SAME dict entry. The pre-prototype
+    # code used `Symbol(pat_str[2:end])` for `$x` (no leading $) and
+    # `Symbol("\$" * pat_str[7:end])` for `__var_x` (WITH leading $) —
+    # two different dict keys for one variable. Now both canonicalise
+    # to `Symbol("\$x")` via the shared helper in Equality.jl.
+    if pat isa Symbol && is_var(pat)
+        vname = _canonical_var(pat)
+        existing = get(b, vname, nothing)
+        existing !== nothing && return atom_equal(existing, val)
         b[vname] = val
         return true
     end
-    pat == val && return true
+    atom_equal(pat, val) && return true   # was `pat == val` — now alpha-aware
     (pat isa Vector && val isa Vector) || return false
     length(pat) == length(val) || return false
     all(i -> _unify!(pat[i], val[i], b), eachindex(pat))
@@ -408,13 +496,11 @@ end
 """Apply variable bindings to an expression."""
 function _apply_bindings(@nospecialize(expr), b::Dict{Symbol,Any}) :: Any
     isempty(b) && return expr
-    if expr isa Symbol
-        s = string(expr)
-        if startswith(s, "\$")
-            return get(b, Symbol(s[2:end]), expr)
-        elseif startswith(s, "__var_")
-            return get(b, Symbol("\$" * s[7:end]), expr)
-        end
+    # PROTOTYPE: route variable lookup through `_canonical_var` so this
+    # function and `_unify!` use the same dict key. Previously these two
+    # used incompatible key forms — see the comment in `_unify!`.
+    if expr isa Symbol && is_var(expr)
+        return get(b, _canonical_var(expr), expr)
     end
     expr isa Vector && return Any[_apply_bindings(e, b) for e in expr]
     expr
@@ -795,11 +881,13 @@ end
 # ── Variable name extraction ──────────────────────────────────────────────────
 
 function _var_name(var::Any) :: Union{Symbol, Nothing}
-    var isa Symbol || return nothing
-    s = string(var)
-    startswith(s, "\$")      && return Symbol(s[2:end])
-    startswith(s, "__var_")  && return Symbol("\$" * s[7:end])
-    nothing
+    # PROTOTYPE: return the canonical \$x form (with leading \$), regardless
+    # of whether the input was \$x or __var_x. This makes `_var_name` agree
+    # with `_canonical_var` / `_apply_bindings` on the dict key. Pre-prototype,
+    # this function stripped the \$ for the \$x case but kept it for __var_x —
+    # the asymmetric keying the other Claude flagged. Now routed through the
+    # same helper that `_unify!` and `_apply_bindings` use.
+    var isa Symbol && is_var(var) ? _canonical_var(var) : nothing
 end
 
 # ── Higher-order special forms (body must NOT be pre-evaluated) ───────────────
