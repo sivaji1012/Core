@@ -103,6 +103,11 @@ function eval_metta(@nospecialize(expr), space::CoreSpace = default_space()) :: 
         raw = try GROUNDED_REGISTRY[string(head)](str_args)
               catch e; @warn "grounded call failed" name=head exception=e; nothing; end
         raw === nothing && return expr
+        # NotReducible protocol: per MeTTa spec, a grounded function returning
+        # the symbol `NotReducible` signals "the interpreter should leave my
+        # call unreduced." Honor the sentinel by returning the original expr
+        # instead of the literal symbol.
+        (raw === "NotReducible" || raw === :NotReducible) && return expr
         return raw isa String ? from_sexpr(raw) :
                raw isa Vector{String} ? from_sexpr.(raw) : raw
     end
