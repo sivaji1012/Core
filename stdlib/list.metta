@@ -1,14 +1,33 @@
-; list.metta — List and collection operations as pure MeTTa
-; The grounded primitives (foldl-atom, map-atom, filter-atom, unique-atom,
-; union-atom, intersection-atom, subtraction-atom) are in AtomOps.jl.
-; These are high-level wrappers and convenience functions.
+; list.metta — rewritten for flat S-expr substrate + eager evaluator.
 ;
-; Cross-verified against:
-;   CeTTa/lib/stdlib.metta §foldl-atom
-;   CeTTa/lib/list.metta
-;   hyperon-experimental stdlib.metta
+; CRITICAL NOTE: this is NOT the H-E / canonical-MeTTa idiom. H-E uses
+; lazy + interleaved reduction, which makes the cons-pair (\$h . \$t)
+; destructuring pattern + CPS helpers (if-decons-expr, if-error, etc.)
+; the natural style. PRIMUS's evaluator is EAGER:
+;   - the rewriter pre-evaluates rule arguments before the rule fires
+;   - the parser treats (\$h . \$t) as a 3-element literal vector
+;     [\$h, :., \$t], not as a cons destructuring pattern
+;   - the only lazy construct is the `if` special form (`_eval_if`
+;     evaluates the condition, then ONLY the taken branch)
+;
+; The previous list.metta was written in the H-E idiom and was
+; DEAD-ON-ARRIVAL on PRIMUS: every recursive clause used (\$h . \$t),
+; which `_unify!` could never match against a real list. Single-base-
+; clause functions (length/sort/etc.) returned unreduced expressions for
+; every non-empty input. Under the streaming-eval branch, divergent
+; overlaps (factorial/nth-style: literal-headed clause vs variable-headed
+; clause) also surfaced as stack overflows.
+;
+; This rewrite uses the only pattern that's actually correct against the
+; evaluator PRIMUS has: a SINGLE GUARDED CLAUSE per function, recursion
+; controlled by `if`, head/tail access via grounded `car-atom` /
+; `cdr-atom` / `is-empty`. Single-clause eliminates the overlap class
+; entirely; `if` provides the laziness needed for termination.
+;
+; This file works correctly under both the current single-result
+; rewriter and the planned streaming rewriter, because there's no
+; second clause to also-fire.
 
-; ── Type declarations ─────────────────────────────────────────────────────────
 (: foldl-atom (-> Expression Atom Variable Variable Atom %Undefined%))
 (: map-atom   (-> Expression Variable Atom Expression))
 (: filter-atom (-> Expression Variable Atom Expression))
@@ -17,52 +36,62 @@
 (: intersection-atom (-> Expression Expression Expression))
 (: subtraction-atom  (-> Expression Expression Expression))
 
-; ── Nil / empty list ─────────────────────────────────────────────────────────
 (: Nil Expression)
 (= Nil ())
 
-; ── Length ────────────────────────────────────────────────────────────────────
-(= (length ()) 0)
-(= (length ($head . $tail)) (+ 1 (length $tail)))
+(= (length $list)
+   (if (is-empty $list)
+       0
+       (+ 1 (length (cdr-atom $list)))))
 
-; ── Append ────────────────────────────────────────────────────────────────────
-(= (append () $ys) $ys)
-(= (append ($x . $xs) $ys) (cons-atom $x (append $xs $ys)))
+(= (append $xs $ys)
+   (if (is-empty $xs)
+       $ys
+       (cons-atom (car-atom $xs) (append (cdr-atom $xs) $ys))))
 
-; ── Reverse ───────────────────────────────────────────────────────────────────
 (= (reverse $list) (reverse-acc $list ()))
-(= (reverse-acc () $acc) $acc)
-(= (reverse-acc ($h . $t) $acc) (reverse-acc $t (cons-atom $h $acc)))
+(= (reverse-acc $list $acc)
+   (if (is-empty $list)
+       $acc
+       (reverse-acc (cdr-atom $list) (cons-atom (car-atom $list) $acc))))
 
-; ── Nth element ───────────────────────────────────────────────────────────────
-(= (nth $list 0) (car-atom $list))
-(= (nth $list $n) (nth (cdr-atom $list) (- $n 1)))
+; nth — guarded recursive clause (was the divergent (nth $list 0)/(nth $list $n) pair)
+(= (nth $list $n)
+   (if (<= $n 0)
+       (car-atom $list)
+       (nth (cdr-atom $list) (- $n 1))))
 
-; ── Member check ─────────────────────────────────────────────────────────────
-(= (member $x ()) False)
-(= (member $x ($h . $t))
-   (if (== $x $h) True (member $x $t)))
+(= (member $x $list)
+   (if (is-empty $list)
+       False
+       (if (== $x (car-atom $list))
+           True
+           (member $x (cdr-atom $list)))))
 
-; ── List sum / product ───────────────────────────────────────────────────────
 (= (sum-list $list) (foldl-atom $list 0 $acc $x (+ $acc $x)))
 (= (product-list $list) (foldl-atom $list 1 $acc $x (* $acc $x)))
 
-; ── Flatten (one level) ──────────────────────────────────────────────────────
-(= (flatten ()) ())
-(= (flatten ($h . $t))
-   (append $h (flatten $t)))
+(= (flatten $list)
+   (if (is-empty $list)
+       ()
+       (append (car-atom $list) (flatten (cdr-atom $list)))))
 
-; ── Zip ───────────────────────────────────────────────────────────────────────
-(= (zip () $ys) ())
-(= (zip $xs ()) ())
-(= (zip ($x . $xs) ($y . $ys))
-   (cons-atom ($x $y) (zip $xs $ys)))
+(= (zip $xs $ys)
+   (if (is-empty $xs)
+       ()
+       (if (is-empty $ys)
+           ()
+           (cons-atom (cons-atom (car-atom $xs) (cons-atom (car-atom $ys) ()))
+                      (zip (cdr-atom $xs) (cdr-atom $ys))))))
 
-; ── Sort (insertion sort for ground atoms) ───────────────────────────────────
-(= (sort ()) ())
-(= (sort ($h . $t)) (insert $h (sort $t)))
-(= (insert $x ()) ($x))
-(= (insert $x ($h . $t))
-   (if (<= $x $h)
-       (cons-atom $x (cons-atom $h $t))
-       (cons-atom $h (insert $x $t))))
+; insertion sort — single guarded clauses
+(= (sort $list)
+   (if (is-empty $list)
+       ()
+       (insert (car-atom $list) (sort (cdr-atom $list)))))
+(= (insert $x $sorted)
+   (if (is-empty $sorted)
+       (cons-atom $x ())
+       (if (<= $x (car-atom $sorted))
+           (cons-atom $x $sorted)
+           (cons-atom (car-atom $sorted) (insert $x (cdr-atom $sorted))))))

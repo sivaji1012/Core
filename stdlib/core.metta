@@ -79,8 +79,18 @@
 ; ── Type predicates (MeTTa-level wrappers) ───────────────────────────────────
 ; Grounded: get-metatype, is-number, is-symbol, is-variable, is-expression
 
-(= (is-function (-> $a $b)) True)
-(= (is-function $x) False)
+; OVER-PRODUCE bin fix: the two-clause version below fires BOTH clauses
+; on an arrow type under streaming `=`, returning [True, False] — a
+; contradiction. Single structural clause via `car-atom` returns exactly
+; one result regardless of rewriter shape.
+;
+;   was:
+;     (= (is-function (-> $a $b)) True)
+;     (= (is-function $x) False)
+(= (is-function $x)
+   (if (== (car-atom $x) ->)
+       True
+       False))
 
 ; ── Quoting ───────────────────────────────────────────────────────────────────
 ; Per hyperon-experimental and CeTTa
