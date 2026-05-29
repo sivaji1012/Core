@@ -134,6 +134,12 @@ function _eval_metta_bounded(@nospecialize(expr), space::CoreSpace) :: Any
     # still return only the first declared type — the multi-valued behavior
     # is the step-4 (streaming) consumer-migration item per resume notes.
     head === Symbol("get-type")    && return _eval_get_type(args, space)
+    # type-cast is dispatched as a special form (rather than the grounded
+    # structural-only version in Primitives.jl) so it can read declared
+    # types from the space and loop over them per the spec's type_cast
+    # algorithm. First-match-success returns the atom; if no declared
+    # type matches, accumulates BadType errors per non-matching type.
+    head === Symbol("type-cast")   && return _eval_type_cast(args, space)
     head === Symbol("add-reduct")     && return _eval_add_reduct(args, space)
     head === Symbol("for-each-in-atom") && return _eval_for_each(args, space)
     # Higher-order atom ops — body arg must NOT be pre-evaluated (special forms)
@@ -266,6 +272,81 @@ function _infer_arg_type(atom, space::CoreSpace)
     startswith(s, "(")  && return Symbol("Expression")
     startswith(s, "\$") && return Symbol("Variable")
     Symbol("Symbol")
+end
+
+"""
+    _spec_types_match(t1, t2) :: Bool
+
+Spec-conformant symmetric `match_types`. Per MeTTa spec:
+
+    if t1 == %Undefined% or t1 == Atom or t2 == %Undefined% or t2 == Atom:
+        match.
+    else match if t1 == t2 (or, in the streaming version, run match_atoms).
+
+Used by `_eval_type_cast` so both meta-type universals AND structural
+equality fire correctly. Kept in lock-step with the grounded `match-types`
+registration in Primitives.jl.
+"""
+function _spec_types_match(t1, t2) :: Bool
+    (t1 === Symbol("%Undefined%") || t1 === Symbol("Atom") ||
+     t2 === Symbol("%Undefined%") || t2 === Symbol("Atom")) && return true
+    t1 === t2
+end
+
+"""
+    _eval_type_cast(args, space) → Atom | Error-expression
+
+Special-form implementation of `(type-cast \$atom \$type \$space)`. Per the
+spec's type_cast algorithm:
+
+    \$types = <list of the types of \$atom from the \$space>
+    \$no_match = []
+    for \$t in \$types:
+        if match_types(\$t, \$type) succeeds: return \$atom
+        else: \$no_match += [\$t]
+    return [(Error \$atom (BadType \$type \$t)) for \$t in \$no_match]
+
+Differences from the previous grounded implementation:
+  - Reads ALL declared types from the space, not just structural inference.
+  - Loops over them with first-match-success (spec semantics).
+  - Honors Atom and %Undefined% as universal via _spec_types_match.
+
+Falls back to structural inference only when no declared types exist.
+The grounded registration in Primitives.jl is kept for backwards
+compatibility; the special-form dispatch fires first.
+"""
+function _eval_type_cast(args::Vector, space::CoreSpace)
+    length(args) < 2 && return nothing
+    atom = eval_metta(args[1], space)
+    requested_t = eval_metta(args[2], space)
+    # third arg is the space — we already have it via `space`.
+
+    # Read all declared types from the space.
+    matches = core_match(space, [Symbol(":"), atom, Symbol("\$t")])
+    declared_types = Any[]
+    for m in matches
+        m isa Vector && length(m) == 3 && push!(declared_types, m[3])
+    end
+
+    if !isempty(declared_types)
+        # Spec algorithm — loop, first match wins, else accumulate BadTypes.
+        no_match = Any[]
+        for t in declared_types
+            _spec_types_match(t, requested_t) && return atom
+            push!(no_match, t)
+        end
+        # No declared type matched. Per spec, return errors for each non-matching
+        # type. Single-valued evaluator: return the first one (the additional
+        # ones would be in the stream under streaming `=`).
+        return Any[Symbol("Error"), atom,
+                   Any[Symbol("BadType"), requested_t, no_match[1]]]
+    end
+
+    # No declared types — fall back to structural inference.
+    inferred = _infer_arg_type(atom, space)
+    _spec_types_match(inferred, requested_t) && return atom
+    Any[Symbol("Error"), atom,
+        Any[Symbol("BadType"), requested_t, inferred]]
 end
 
 """
