@@ -290,7 +290,7 @@ function _register_type_ops!()
         # Grounded type inference from value
         tryparse(Int, s) !== nothing    && return "Number"
         tryparse(Float64, s) !== nothing && return "Number"
-        s == "True" || s == "False"    && return "Bool"
+        (s == "True" || s == "False" || s == "true" || s == "false") && return "Bool"
         startswith(s, "\"")            && return "String"
         startswith(s, "(")             && return "Expression"
         startswith(s, "\$")            && return "Variable"
@@ -303,7 +303,7 @@ function _register_type_ops!()
         startswith(s, "\$")  && return "Variable"
         startswith(s, "(")   && return "Expression"
         tryparse(Float64, s) !== nothing && return "Grounded"
-        s == "True" || s == "False"     && return "Grounded"
+        (s == "True" || s == "False" || s == "true" || s == "false") && return "Grounded"
         "Symbol"
     end)
 
@@ -324,7 +324,7 @@ function _register_type_ops!()
             s = strip(atom)
             tryparse(Int, s) !== nothing    ? "Number" :
             tryparse(Float64, s) !== nothing ? "Number" :
-            s == "True" || s == "False"    ? "Bool"   :
+            (s == "True" || s == "False" || s == "true" || s == "false") ? "Bool" :
             startswith(s, "\"")            ? "String" :
             startswith(s, "(")             ? "Expression" : "Symbol"
         end

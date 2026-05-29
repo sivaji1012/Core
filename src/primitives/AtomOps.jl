@@ -257,15 +257,9 @@ function _register_atom_ops!(eval_fn::Function)
     end)
 
     # ── Type predicates ────────────────────────────────────────────────────────
-
-    MORK.register_grounded!("get-metatype", args -> begin
-        isempty(args) && return "Symbol"
-        s = strip(args[1])
-        startswith(s, "\$") && return "Variable"
-        startswith(s, "(") && return "Expression"
-        tryparse(Float64, s) !== nothing && return "Grounded"
-        "Symbol"
-    end)
+    # NOTE: get-metatype is registered in Primitives.jl _register_type_ops!.
+    # An older duplicate registration here overrode the more-complete version
+    # (no True/False → Grounded). Removed 2026-05-29.
 
     MORK.register_grounded!("is-number", args -> begin
         isempty(args) && return "False"
