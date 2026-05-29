@@ -616,11 +616,22 @@ function core_rules(s::CoreSpace, head_sym::Symbol) :: Vector{Tuple{Vector{Any},
     rules = Tuple{Vector{Any}, Any}[]
     with_read_permit(s) do
         _walk_atoms(s) do atom
+            # Stay inside the length-3 gate — preserves inertness of malformed
+            # `=` atoms (arity 0/1/4+) which must not become rules under any
+            # rewriter shape (current first-match or future fan-out).
             atom isa Vector && length(atom) == 3 && atom[1] === :(=) || return
             head_part = atom[2]
             body      = atom[3]
-            head_part isa Vector && !isempty(head_part) && head_part[1] === head_sym || return
-            push!(rules, (head_part[2:end], body))
+            # Two LHS shapes both inside the length-3 gate:
+            #   expression-LHS:  (= (head args...) body)  → params = args
+            #   symbol-LHS:      (= head body)            → params = []
+            # The symbol-LHS branch covers named constants like (= Nil ())
+            # and (= pi 3.14159) — previously dead code per audit section E.
+            if head_part isa Vector && !isempty(head_part) && head_part[1] === head_sym
+                push!(rules, (head_part[2:end], body))
+            elseif head_part isa Symbol && head_part === head_sym
+                push!(rules, (Any[], body))
+            end
         end
     end
     s.rule_cache[head_sym] = rules
