@@ -52,3 +52,38 @@
 
 ;; Euclidean norm: sqrt(Σ xᵢ²)
 (= (norm $arr) (sqrt (foldl-atom $arr 0.0 $acc $x (+ $acc (* $x $x)))))
+
+;; ── M4: dynamics helpers (pure MeTTa; index-conditional via member/min/max) ──
+
+;; clip scalar to [lo,hi] (upstream npClip)
+(= (npClip $v $lo $hi) (clamp $v $lo $hi))
+
+;; (1-α)·a + α·b elementwise
+(= (blendArrays $a $b $alpha)
+   (vectorAdd (scaleArray $a (- 1.0 $alpha)) (scaleArray $b $alpha)))
+
+;; set element at position $idx to $val
+(= (setAtIndex $arr $idx $val) (_setAtIdx $arr 0 $idx $val))
+(= (_setAtIdx $arr $pos $idx $val)
+   (if (== $arr ())
+       ()
+       (let* ((($h $t) (decons $arr)))
+         (cons-atom (if (== $pos $idx) $val $h) (_setAtIdx $t (+ $pos 1) $idx $val)))))
+
+;; add $boost (capped at $maxVal) to elements whose position is in $indices
+(= (boostAtIndices $arr $indices $boost $maxVal) (_boostAtIdx $arr 0 $indices $boost $maxVal))
+(= (_boostAtIdx $arr $pos $indices $boost $maxVal)
+   (if (== $arr ())
+       ()
+       (let* ((($h $t) (decons $arr))
+              ($nh (if (member $pos $indices) (min $maxVal (+ $h $boost)) $h)))
+         (cons-atom $nh (_boostAtIdx $t (+ $pos 1) $indices $boost $maxVal)))))
+
+;; project goals into the safe region: floor goals[weightIdx] at thetaSafe, then
+;; scale the whole vector down if ‖goals‖ exceeds gMax.
+(= (projectGoalsToSafe $goals $weightIdx $thetaSafe $gMax)
+   (let* (
+     ($g1 (setAtIndex $goals $weightIdx (max (index-atom $goals $weightIdx) $thetaSafe)))
+     ($n (norm $g1))
+   )
+     (if (> $n $gMax) (scaleArray $g1 (/ $gMax $n)) $g1)))

@@ -42,3 +42,7 @@
 (= (LAMBDA_TRANS) 0.5)
 (= (THETA_SAFE) 0.3)
 (= (G_MAX) 2.0)
+
+;; OpenPsi merge/projection index categories (openpsi/config.metta)
+(= (OPENPSI_GOAL_WEIGHT_IDX) 0)        ;; gInd position in the goal vector
+(= (OPENPSI_CAUTION_MOD_IDX) (4 5))    ;; threshold, securing
