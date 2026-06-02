@@ -173,4 +173,35 @@ _q(e) = qmm(replace(e, "\$st" => _ST))
     end
 end
 
+# ── M5: standalone ECAN bridge (does NOT touch the live governance-step!) ──────
+@testset "MetaMo ↔ ECAN bridge (standalone demo)" begin
+    qmm("!(import! &self (library ecan))")
+    qmm("!(import! &self \"$(joinpath(@__DIR__, "..", "lib", "metamo", "ecan_bridge.metta"))\")")
+    # Seed an attention state: goalX with STI 5.0, three atoms in the focus.
+    qmm("(AV goalX 5.0 0.0 0.0)")
+    qmm("(InAF a1)")
+    qmm("(InAF a2)")
+    qmm("(InAF a3)")
+
+    @test qmm("!(af-size)") == [3]
+    @test qmm("!(get-sti goalX)") == [5.0]
+
+    # Stimulus derived from ECAN: 4 channels, all bounded in [0,1].
+    stim = qmm("!(ecanStimulus goalX)")[1]
+    @test stim[1] == :stimulus
+    vals = stim[2]
+    @test length(vals) == 4 && all(v -> v isa Number && 0.0 <= v <= 1.0, vals)
+    @test vals[1] ≈ 3.0 / 20.0                 # occupancy = af-size / scale
+    @test isapprox(vals[2], 0.9933071; atol = 1e-5)   # salience = sigmoid(5.0)
+
+    # A governance tick: stabilized step driven by the ECAN-derived stimulus.
+    good = "(action good (0.0 0.0 1.0 1.0 1.0 1.0 1.0 1.0) 0.0 (0.0 0.0 0.05 0.05 0.05 0.05 0.05 0.05))"
+    bad = "(action bad (0.0 0.0 -1.0 -1.0 -1.0 -1.0 -1.0 -1.0) 1.0 (0.0 0.0 0.0 0.0 0.0 0.0 0.0 0.0))"
+    e = replace("!(ecanMotivationStep \$st goalX (\$g \$b))", "\$st" => _ST, "\$g" => good, "\$b" => bad)
+    tr = qmm(e)[1]
+    @test tr[1] == :transitionResult
+    safe = qmm("!(isInSafeRegion (transitionState $(e[2:end])))")  # drop leading '!'
+    @test safe[1] ∈ (true, :True)
+end
+
 println("\n✓ MetaMo Core tests complete")
