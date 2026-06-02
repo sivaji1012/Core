@@ -56,7 +56,10 @@
    (ecan-spread-step! $node 10.0))
 
 ;; Policy: Proportional Spreading (based on STI)
-(: spread-proportional! (-> Atom Float Bool))
+;; NB: second arg is Number, not Float — Core types every numeric literal (Int or
+;; Float) as `Number`, so a `Float` annotation rejects a literal like 0.1 with
+;; (BadArgType … Float Number). Matches the heartbeat! convention below.
+(: spread-proportional! (-> Atom Number Bool))
 (= (spread-proportional! $node $percent)
    (let $current-sti (get-sti $node)
         (ecan-spread-step! $node (* $current-sti $percent))))

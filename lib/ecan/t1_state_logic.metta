@@ -20,9 +20,13 @@
    (let $atoms (get-af-atoms)
         (if (== $atoms ()) 0 (size-atom $atoms))))
 
+;; Membership test. NB: a GROUND-pattern `(collapse (match &self (InAF $id) …))`
+;; with $id already bound hits Core's collapse-match-in-rule-body quirk (returns
+;; () even when the atom exists — the same quirk get-sti works around), so it
+;; always reported False. Reuse the working free-pattern path (get-af-atoms) and
+;; test membership of the returned list instead.
 (= (is-in-af? $id)
-   (let $result (collapse (match &self (InAF $id) True))
-        (if (== $result ()) False True)))
+   (member $id (get-af-atoms)))
 
 ;; -------------------------------------------------------
 ;; 2. Minimum AF STI Tracking

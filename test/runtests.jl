@@ -516,3 +516,8 @@ include("test_william.jl")
 
 # MetaMo algorithm tests — lib/metamo/ (icoglabs MetaMo adoption, PLN-style multi-file).
 include("test_metamo.jl")
+
+# ECAN acceptance suite — executes examples/ecan/*.metta (attention economy:
+# AV, funds, wages, two-tier rent, AF, spreading + Hebbian, governance, fluid,
+# adaptive). The slow Stability convergence probe is gated behind ECAN_SLOW_TESTS=1.
+include("test_ecan.jl")
