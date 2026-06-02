@@ -66,4 +66,14 @@
 !(assertEqual (default-link-weight) 1.0)
 !(assertEqual (link-learning-rate) 0.1)
 
+;; ── Test 9: hebbian-conjunction affine mapping conj∈[-1,1] → [0,1] ────
+;; conj = (ni·nj) + (nj-ni)·|nj-ni|, then (conj+1)/2.
+;; Co-activation (both high) → 1.0:  conj = 1·1 + 0 = 1 → (1+1)/2 = 1.0
+!(assertEqual (hebbian-conjunction 1.0 1.0) 1.0)
+;; Anti-correlation (i high, j low) → 0.0:  conj = 0 + (-1)·1 = -1 → 0.0
+!(assertEqual (hebbian-conjunction 1.0 0.0) 0.0)
+;; Both zero → 0.5 (the neutral midpoint the old clamp wrongly floored to 0):
+;; conj = 0 + 0 = 0 → (0+1)/2 = 0.5
+!(assertEqual (hebbian-conjunction 0.0 0.0) 0.5)
+
 !(println! "Spreading.metta: all tests passed ✓")

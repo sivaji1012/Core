@@ -202,14 +202,20 @@
 ;; Reference: HebbianCreationAgent + HebbianUpdatingAgent
 ;; -------------------------------------------------------
 
-;; Hebbian conjunction formula (from HebbianUpdatingAgent)
-;; conj = (ni × nj) + (nj - ni) × |nj - ni|  clamped [0,1]
+;; Hebbian conjunction formula (from HebbianUpdatingAgent):
+;;   conj    = (ni × nj) + (nj - ni) × |nj - ni|      ∈ [-1, 1]
+;;   ret     = (conj + 1) / 2                          ∈ [0, 1]
+;; The raw conj is a signed correlation (-1 = strong anti-correlation, +1 = strong
+;; co-activation). We map it AFFINELY to [0,1] — the canonical upstream form — so
+;; anti-correlation is preserved in order rather than collapsed. (It previously
+;; used clamp(conj,0,1), which floored every conj ≤ 0 to 0, conflating "independent"
+;; with "anti-correlated" and discarding the lower half of the signal.)
 (= (hebbian-conjunction $norm-i $norm-j)
    (let* (($product  (* $norm-i $norm-j))
           ($diff     (- $norm-j $norm-i))
           ($abs-diff (if (< $diff 0.0) (* -1.0 $diff) $diff))
           ($conj     (+ $product (* $diff $abs-diff))))
-     (clamp $conj 0.0 1.0)))
+     (/ (+ $conj 1.0) 2.0)))
 
 ;; Update Hebbian link weight between two co-active atoms.
 ;; collapse(match) → match directly; let-destructure → let* compound pattern.
