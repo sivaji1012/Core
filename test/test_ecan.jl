@@ -16,7 +16,7 @@ const ECAN_DIR = joinpath(@__DIR__, "..", "examples", "ecan")
 # Fast acceptance files — full mechanism coverage, always run.
 const ECAN_FILES = [
     "CoreAV", "Funds", "Wages", "Rent", "Stimulate", "AFState",
-    "BulkOps", "Spreading", "Governance", "Fluid", "Adaptive",
+    "BulkOps", "Spreading", "Governance", "Fluid", "Adaptive", "Forgetting",
 ]
 
 # Stability runs heartbeat!×100 (two 50-tick convergence runs) through the

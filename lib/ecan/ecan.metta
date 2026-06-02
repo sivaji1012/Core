@@ -33,4 +33,5 @@
 !(import! &self "t1_SpreadingActivation.metta")   ;; Phase 1b — spreading kernel, Hebbian links
 !(import! &self "t1_AttentionPolicies.metta")     ;; Phase 1b — governance-step!, heartbeat!
 !(import! &self "t1_FluidECAN.metta")             ;; Phase 1c — continuous-time fluid dynamics
+!(import! &self "t1_Forgetting.metta")            ;; Phase 1c — memory reclamation (LTI threshold + Hebbian protection)
 !(import! &self "../hyperseed/adaptive_attention.metta")  ;; Phase 1c — entropy classifier + self-evolution
