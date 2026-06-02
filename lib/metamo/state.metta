@@ -14,3 +14,8 @@
 (= (actionDeltaG (action $actionId $goalCorrelations $riskEstimate $deltaG)) $deltaG)
 
 (= (copyMotivationState (motivation $goals $modulators)) (motivation $goals $modulators))
+
+;; L2 distance between two motivational states (goals + modulators), used by the
+;; lax-distributive-law check + the contraction law (needs helpers: norm/listDifference).
+(= (motivationStateDistance (motivation $g1 $m1) (motivation $g2 $m2))
+   (+ (norm (listDifference $g1 $g2)) (norm (listDifference $m1 $m2))))

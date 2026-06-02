@@ -75,6 +75,34 @@ _q(e) = qmm(replace(e, "\$st" => _ST))
         # decisionAction returns the full chosen action; actionId extracts its id.
         @test qmm(replace("!(actionId (decisionAction (magusDecide \$st (\$g \$b))))", "\$st" => _ST, "\$g" => good, "\$b" => bad)) == [:good]
     end
+
+    @testset "M3 — bimonad vector helpers (vectorAdd/listDifference/norm)" begin
+        @test qmm("!(vectorAdd (1.0 2.0 3.0) (0.5 0.5 0.5))") == [Any[1.5, 2.5, 3.5]]
+        @test qmm("!(listDifference (1.0 2.0) (0.25 0.5))") == [Any[0.75, 1.5]]
+        @test qmm("!(norm (3.0 4.0))")[1] ≈ 5.0
+    end
+
+    @testset "M3 — pseudo-bimonad step F = 𝔻 ∘ Ψ (eq #6)" begin
+        good = "(action good (0.0 0.0 1.0 1.0 1.0 1.0 1.0 1.0) 0.0 (0.0 0.0 0.05 0.05 0.05 0.05 0.05 0.05))"
+        bad = "(action bad (0.0 0.0 -1.0 -1.0 -1.0 -1.0 -1.0 -1.0) 1.0 (0.0 0.0 0.0 0.0 0.0 0.0 0.0 0.0))"
+        stim = "(stimulus (0.2 0.8 0.1 0.2))"
+        sub(e) = replace(e, "\$st" => _ST, "\$g" => good, "\$b" => bad, "\$s" => stim)
+
+        tr = qmm(sub("!(metamoStep \$st \$s (\$g \$b))"))[1]
+        @test tr[1] == :transitionResult
+        # chosen action = good (𝔻 picks it)
+        @test qmm(sub("!(actionId (transitionAction (metamoStep \$st \$s (\$g \$b))))")) == [:good]
+        # next state: motivation with 8 clipped goals + 6 appraised modulators
+        nextst = qmm(sub("!(transitionState (metamoStep \$st \$s (\$g \$b)))"))[1]
+        @test nextst[1] == :motivation
+        @test length(nextst[2]) == 8 && all(g -> 0.0 <= g <= 1.0, nextst[2])
+        @test length(nextst[3]) == 6 && all(m -> 0.0 <= m <= 1.0, nextst[3])
+
+        # Principle 1 — lax-distributive-law check returns a Bool (Core yields
+        # True/False as Julia true/false here).
+        lax = qmm(sub("!(checkLaxDistributiveLaw \$st \$s (\$g \$b))"))
+        @test length(lax) == 1 && lax[1] ∈ (true, false, :True, :False)
+    end
 end
 
 println("\n✓ MetaMo Core tests complete")

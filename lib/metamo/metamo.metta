@@ -8,7 +8,7 @@
 ;;;; Build status (incremental adoption):
 ;;;;   M1 ✅ foundation (config/state/accessors/helpers) + OpenPsi appraisal Ψ (eq #4)
 ;;;;   M2 ✅ MAGUS decision 𝔻 (eq #5/#10/#11) + vector helpers
-;;;;   M3 ⏳ pseudo-bimonad F = 𝔻∘Ψ (eq #6) + lax-distributive check
+;;;;   M3 ✅ pseudo-bimonad F = 𝔻∘Ψ (eq #6) + lax-distributive check (bare; dynamics in M4)
 ;;;;   M4 ⏳ dynamics: safe region / contraction (eq #7/#8) + incremental blend (eq #9)
 ;;;;
 ;;;; Import:  !(import! &self (library metamo))
@@ -19,3 +19,4 @@
 !(import! &self "accessors.metta")
 !(import! &self "appraisal.metta")
 !(import! &self "decision.metta")
+!(import! &self "bimonad.metta")

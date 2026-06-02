@@ -33,3 +33,22 @@
 (= (meanAtIndices $arr $indices)
    (/ (foldl-atom $indices 0.0 $acc $i (+ $acc (index-atom $arr $i)))
       (size-atom $indices)))
+
+;; ── M3: vector helpers for the bimonad / distance (pure MeTTa) ──
+
+;; elementwise a+b (recursive; base case empty list)
+(= (vectorAdd $a $b)
+   (if (== $a ())
+       ()
+       (let* ((($ah $at) (decons $a)) (($bh $bt) (decons $b)))
+         (cons-atom (+ $ah $bh) (vectorAdd $at $bt)))))
+
+;; elementwise a-b
+(= (listDifference $a $b)
+   (if (== $a ())
+       ()
+       (let* ((($ah $at) (decons $a)) (($bh $bt) (decons $b)))
+         (cons-atom (- $ah $bh) (listDifference $at $bt)))))
+
+;; Euclidean norm: sqrt(Σ xᵢ²)
+(= (norm $arr) (sqrt (foldl-atom $arr 0.0 $acc $x (+ $acc (* $x $x)))))
