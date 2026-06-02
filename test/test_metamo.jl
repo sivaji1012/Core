@@ -204,4 +204,37 @@ end
     @test safe[1] ∈ (true, :True)
 end
 
+# ── Multi-tick trajectory: the live (eq #8) contraction + safe-region invariant ─
+# Iterating metamoGovern must keep every state inside R and contract toward a
+# fixed point. (This test caught the projectGoalsToSafe floor-then-scale bug:
+# the upstream ordering let the state escape R at tick 7 once ‖G‖ hit G_max.)
+@testset "MetaMo — metamoGovern trajectory (contraction + R invariant)" begin
+    good = "(action good (0.0 0.0 1.0 1.0 1.0 1.0 1.0 1.0) 0.0 (0.0 0.0 0.05 0.05 0.05 0.05 0.05 0.05))"
+    bad = "(action bad (0.0 0.0 -1.0 -1.0 -1.0 -1.0 -1.0 -1.0) 1.0 (0.0 0.0 0.0 0.0 0.0 0.0 0.0 0.0))"
+    stim = "(stimulus (0.2 0.8 0.1 0.2))"
+    gmax = 2.0
+
+    state = _ST
+    prev = nothing
+    safes = Bool[]
+    norms = Float64[]
+    dists = Float64[]
+    for _ in 1:12
+        nstr = qmm("!(transitionState (metamoGovern $state $stim ($good $bad)))")[1] |>
+               x -> sprint(io -> print(io, MeTTaCore.to_sexpr(x)))
+        push!(safes, qmm("!(isInSafeRegion $nstr)")[1] ∈ (true, :True))
+        push!(norms, qmm("!(norm (motivationGoals $nstr))")[1])
+        prev === nothing || push!(dists, qmm("!(motivationStateDistance $prev $nstr)")[1])
+        prev = nstr
+        state = nstr
+    end
+
+    @test all(safes)                                    # never leaves the safe region R
+    @test all(n -> n <= gmax + 1e-9, norms)             # norm bound holds (clamps at G_max)
+    # Early-phase contraction: each of the first steps strictly shrinks the move.
+    @test dists[1] > dists[2] > dists[3] > dists[4]
+    # Converged: the late-phase residual is an order of magnitude below the start.
+    @test dists[1] > 0.4 && minimum(dists[6:end]) < 0.05
+end
+
 println("\n✓ MetaMo Core tests complete")

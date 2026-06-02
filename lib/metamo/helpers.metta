@@ -79,11 +79,27 @@
               ($nh (if (member $pos $indices) (min $maxVal (+ $h $boost)) $h)))
          (cons-atom $nh (_boostAtIdx $t (+ $pos 1) $indices $boost $maxVal)))))
 
-;; project goals into the safe region: floor goals[weightIdx] at thetaSafe, then
-;; scale the whole vector down if ‖goals‖ exceeds gMax.
+;; project goals into the safe region R = { gInd ≥ θ ∧ ‖G‖ ≤ gMax }.
+;;
+;; NOTE — divergence from upstream (justified): the upstream floors gInd to θ and
+;; THEN scales the whole vector by gMax/‖G‖, which drags gInd back below θ whenever
+;; ‖G‖ > gMax — so the projected state can still be OUTSIDE R (a multi-tick
+;; metamoGovern trajectory exposed this: state left R at tick 7). The correct
+;; projection holds the floored weight FIXED and shrinks only the remaining
+;; coordinates to the norm budget, so BOTH invariants hold exactly:
+;;   gInd' = max(gInd, θ);   ‖G'‖ = min(‖G‖, gMax).
 (= (projectGoalsToSafe $goals $weightIdx $thetaSafe $gMax)
    (let* (
-     ($g1 (setAtIndex $goals $weightIdx (max (index-atom $goals $weightIdx) $thetaSafe)))
+     ($w (max (index-atom $goals $weightIdx) $thetaSafe))   ;; floored weight (gInd)
+     ($g1 (setAtIndex $goals $weightIdx $w))
      ($n (norm $g1))
    )
-     (if (> $n $gMax) (scaleArray $g1 (/ $gMax $n)) $g1)))
+     (if (<= $n $gMax)
+         $g1
+         ;; ‖G‖ too large: hold the weight, scale the rest so ‖G'‖ = gMax exactly.
+         (let* (
+           ($restBudget (sqrt (max 0.0 (- (* $gMax $gMax) (* $w $w)))))
+           ($restNorm   (sqrt (max 0.0 (- (* $n $n)       (* $w $w)))))
+           ($factor (if (> $restNorm 0.0) (/ $restBudget $restNorm) 0.0))
+         )
+           (setAtIndex (scaleArray $g1 $factor) $weightIdx $w)))))
