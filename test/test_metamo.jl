@@ -157,6 +157,20 @@ _q(e) = qmm(replace(e, "\$st" => _ST))
         # No movement (state→state) → zero drift → within any positive bound.
         @test _q("!(checkSelfModelDrift \$st \$st 2.0 1.0)")[1] ∈ (true, :True)
     end
+
+    @testset "M4 — fully-stabilized governance step (metamoGovern)" begin
+        good = "(action good (0.0 0.0 1.0 1.0 1.0 1.0 1.0 1.0) 0.0 (0.0 0.0 0.05 0.05 0.05 0.05 0.05 0.05))"
+        bad = "(action bad (0.0 0.0 -1.0 -1.0 -1.0 -1.0 -1.0 -1.0) 1.0 (0.0 0.0 0.0 0.0 0.0 0.0 0.0 0.0))"
+        stim = "(stimulus (0.2 0.8 0.1 0.2))"
+        sub(e) = replace(e, "\$st" => _ST, "\$g" => good, "\$b" => bad, "\$s" => stim)
+
+        tr = qmm(sub("!(metamoGovern \$st \$s (\$g \$b))"))[1]
+        @test tr[1] == :transitionResult
+        @test qmm(sub("!(actionId (transitionAction (metamoGovern \$st \$s (\$g \$b))))")) == [:good]
+        # Stabilized: the next state is guaranteed inside the safe region R.
+        safe = qmm(sub("!(isInSafeRegion (transitionState (metamoGovern \$st \$s (\$g \$b))))"))
+        @test safe[1] ∈ (true, :True)
+    end
 end
 
 println("\n✓ MetaMo Core tests complete")

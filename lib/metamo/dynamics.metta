@@ -117,3 +117,21 @@
 (= (checkSelfModelDrift $currentState $nextState $lipschitzConstant $maxAllowedDrift)
    (<= (* $lipschitzConstant (motivationStateDistance $currentState $nextState))
        $maxAllowedDrift))
+
+;; ── Fully-stabilized governance step ───────────────────────────────────────
+;; The complete F with the Principle-4 safeguards inline — this is the map the
+;; contraction law (eq #8) is meant to govern, and the step the ECAN heartbeat
+;; would call:
+;;   Ψ appraise → 𝔻 decide → damp ΔG → apply → raise caution → project if unsafe.
+;; Returns (transitionResult chosenAction safeNextState); the next state is always
+;; in the safe region R.
+(= (metamoGovern $state $stimulus $candidates)
+   (let* (
+     ($appraised (openPsiAppraise $state $stimulus))                 ;; Ψ
+     ($decision (magusDecide $appraised $candidates))                ;; 𝔻
+     ($dampedG (applyHomeostaticDamping $appraised (decisionDeltaG $decision)))
+     ($moved (applyDelta $appraised $dampedG))
+     ($cautioned (raiseBoundaryCaution $moved))
+     ($safe (if (isInSafeRegion $cautioned) $cautioned (projectToSafeRegion $cautioned)))
+   )
+     (transitionResult (decisionAction $decision) $safe)))
