@@ -499,17 +499,30 @@ function _walk_atoms(f::Function, s::CoreSpace)
         for line in split(space_dump_all_sexpr(s.inner), '\n')
             ls = strip(line)
             isempty(ls) && continue
+            # CORE-2 fix (audit 2026-06-05): guard ONLY the parse, not the callback. The old
+            # bare `catch; end` swallowed both malformed-atom parse failures AND bugs in the
+            # user's `f`, silently dropping atoms from match/enumerate results (SP-1 class).
+            local atom
             try
-                f(from_sexpr(ls))
-            catch; end
+                atom = from_sexpr(ls)
+            catch err
+                @warn "CoreSpace _walk_atoms: skipping unparseable atom" line=ls exception=err maxlog=5
+                continue
+            end
+            f(atom)
         end
     else
         rz = read_zipper_at_path(s.inner.btm, s.prefix)
         while zipper_to_next_val!(rz)
             rel_bytes = collect(zipper_path(rz))
+            local atom
             try
-                f(from_sexpr(strip(expr_serialize(rel_bytes))))
-            catch; end
+                atom = from_sexpr(strip(expr_serialize(rel_bytes)))
+            catch err
+                @warn "CoreSpace _walk_atoms: skipping unparseable atom (prefixed)" exception=err maxlog=5
+                continue
+            end
+            f(atom)
         end
     end
 end
@@ -570,9 +583,15 @@ function _walk_atoms_narrowed(f::Function, s::CoreSpace, prefix_bytes::Vector{UI
     rz = read_zipper_at_path(s.inner.btm, vcat(s.prefix, prefix_bytes))
     while zipper_to_next_val!(rz)
         full = vcat(prefix_bytes, collect(zipper_path(rz)))   # full atom bytes (no region prefix)
+        # CORE-2 fix (audit 2026-06-05): guard ONLY the parse, let callback errors propagate.
+        local atom
         try
-            f(from_sexpr(strip(expr_serialize(full))))
-        catch; end
+            atom = from_sexpr(strip(expr_serialize(full)))
+        catch err
+            @warn "CoreSpace _walk_atoms_narrowed: skipping unparseable atom" exception=err maxlog=5
+            continue
+        end
+        f(atom)
     end
 end
 

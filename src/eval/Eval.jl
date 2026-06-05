@@ -481,7 +481,11 @@ function _eval_exec_atom(expr::Vector, space::CoreSpace)
     #   CountSink workloads (WILLIAM.count, WILLIAM.dict-size) should verify
     #   before opting in if they rely on duplicate-result counts being exact.
     if space.use_supercompiler
-        MorkSupercompiler.plan!(space.inner, to_sexpr(expr), typemax(Int))
+        # CORE-JET-1 fix (audit 2026-06-05): was `MorkSupercompiler.plan!` but the module is
+        # imported as `using MorkSupercompiler: plan!` — only `plan!` is in scope, NOT the
+        # module binding, so the qualified ref threw UndefVarError, crashing every
+        # use_supercompiler=true space. Call the imported `plan!` directly. (JET-found.)
+        plan!(space.inner, to_sexpr(expr), typemax(Int))
     else
         core_add!(space, expr)
         core_calculus!(space, 10_000)
