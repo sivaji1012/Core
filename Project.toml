@@ -14,9 +14,14 @@ Revise = "295af30f-e4ad-537b-8983-00126c2a3abe"
 
 [sources]
 AdaptiveCompression = {url = "https://github.com/sivaji1012/adaptive-compression"}
-MORK = {url = "https://github.com/sivaji1012/MORK"}
+# MORK + PathMap dev-linked to the sibling hardened (CognitiveSubstratesAI) checkouts,
+# matching MorkSupercompiler/MORKTensorNetworks (which also `path = "../MORK"`/`"../PathMap"`).
+# A single Manifest can't hold two sources per UUID, so these MUST be path to agree with
+# the path-sourced siblings. Bumped off the pre-split sivaji1012/MORK@b748b60 (CORE-INT-1).
+# When Core itself migrates to the org, flip these back to {url = ".../CognitiveSubstratesAI/*"}.
+MORK = {path = "../MORK"}
 MorkSupercompiler = {path = "../MorkSupercompiler"}
-PathMap = {url = "https://github.com/sivaji1012/PathMap"}
+PathMap = {path = "../PathMap"}
 
 [compat]
 AdaptiveCompression = "0.2"
