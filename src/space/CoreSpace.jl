@@ -185,8 +185,10 @@ Create a CoreSpace as a `(shared trie, byte-prefix)` reference. Atoms live
 in `shared`; this CoreSpace's operations are scoped to `prefix`.
 
 Two CoreSpaces with the same `shared` and `prefix_compare(p1, p2) ==
-PREFIX_DISJOINT` operate concurrently under MORK's `StatusMap` permits
-(see Step 3); overlapping prefixes serialize.
+PREFIX_DISJOINT` address non-overlapping regions of the trie and are
+mutually independent. Core itself adds no concurrency coordination — that
+is a server-tier concern (see the permit pass-throughs below, CORE-INT-1);
+a concurrent embedding without an external coarse lock would reattach it there.
 """
 new_core_space(shared::Space, prefix::Vector{UInt8}) =
     CoreSpace(shared, copy(prefix),
@@ -304,70 +306,24 @@ function rebind_to_shared_prefix(src::CoreSpace, prefix::Vector{UInt8}) :: CoreS
     wrapped
 end
 
-# ── Node-level concurrency permits (Stage 1) ──────────────────────────────────
-# A single StatusMap per process tracks per-prefix read/write permissions for
-# all CoreSpaces sharing the node's trie.  Two CoreSpaces with
-# `prefix_compare(p1, p2) == PREFIX_DISJOINT` acquire permits independently
-# and proceed in parallel; overlapping prefixes serialize via the permits.
+# ── Concurrency permits — pass-through (CORE-INT-1, audit 2026-06-05) ──────────
+# These were once backed by MORK's `StatusMap` (per-prefix read/write permits).
+# That was a LAYERING ERROR: upstream keeps `status_map.rs` in the `mork-server`
+# crate (used only by server_space.rs/main.rs/commands.rs) — the kernel `Space`
+# carries no concurrency coordination, and neither should the Core interpreter
+# library.  Concurrent access is a *server-tier* concern:
+#   * embedded Core is single-threaded → permits never contend;
+#   * served Core (MettaJam) already serializes every eval under one coarse
+#     `ReentrantLock`, exactly as MorkServer fronts the substrate with StatusMap.
+# So Core no longer imports `StatusMap`/`sm_*` (that import was also the sole
+# blocker to bumping Core onto the post-split hardened MORK — CORE-INT-1).
 #
-# Lazy-init: `StatusMap()` is cheap (just a few empty Dicts + a ReentrantLock)
-# but we keep it Ref-wrapped so module load doesn't depend on MORK exports
-# being resolved at parse-time.
-const NODE_STATUS_MAP = Ref{Any}(nothing)
-
-function node_status_map() :: StatusMap
-    NODE_STATUS_MAP[] === nothing && (NODE_STATUS_MAP[] = StatusMap())
-    NODE_STATUS_MAP[]
-end
-
-"""
-    with_read_permit(f, s::CoreSpace)
-
-Acquire a read permit on `s.prefix` via the node's StatusMap, run `f()`,
-release.  Empty prefix is a no-op (root-prefix has no isolation).
-
-Errors loudly if the prefix is currently held by a writer.  For Stage 1
-single-threaded use this never triggers; future multi-threaded paths
-will see this as the back-pressure mechanism.
-"""
-function with_read_permit(f::Function, s::CoreSpace)
-    isempty(s.prefix) && return f()
-    perm = sm_get_read_permission(node_status_map(), s.prefix)
-    perm === nothing && error("CoreSpace read denied: prefix $(_prefix_str(s.prefix)) is locked for write")
-    try
-        f()
-    finally
-        sm_release_read!(node_status_map(), perm)
-    end
-end
-
-"""
-    with_write_permit(f, s::CoreSpace)
-
-Acquire an exclusive write permit on `s.prefix` via the node's StatusMap,
-run `f()`, release.  Empty prefix is a no-op.
-
-Errors loudly if the prefix has active readers or another writer.
-"""
-function with_write_permit(f::Function, s::CoreSpace)
-    isempty(s.prefix) && return f()
-    perm = sm_get_write_permission(node_status_map(), s.prefix)
-    perm === nothing && error("CoreSpace write denied: prefix $(_prefix_str(s.prefix)) has active readers or another writer")
-    try
-        f()
-    finally
-        sm_release_write!(node_status_map(), perm)
-    end
-end
-
-# Pretty-print a prefix-bytes value for error messages.
-function _prefix_str(p::Vector{UInt8})
-    try
-        String(copy(p))
-    catch
-        bytes2hex(p)
-    end
-end
+# The two wrappers are kept as thin pass-throughs: they preserve the call-site
+# seam so a future *concurrent embedding without an external coarse lock* can
+# reattach real coordination HERE (or, upstream-faithfully, behind a Core
+# server tier) without touching every caller.
+with_read_permit(f::Function, ::CoreSpace)  = f()
+with_write_permit(f::Function, ::CoreSpace) = f()
 
 """
     enable_sc!(space) → space

@@ -34,10 +34,7 @@ using MORK: Space, new_space,
             space_query_multi, ExecError,
             register_grounded!, is_grounded, GROUNDED_REGISTRY,
             # .act + multi-source machinery (Stage 1 CoreSpaceActIO)
-            asource_new, source_factor, ACT_PATH,
-            # Per-prefix permits — StatusMap lives in MORK's server layer
-            StatusMap, sm_get_read_permission, sm_release_read!,
-            sm_get_write_permission, sm_release_write!
+            asource_new, source_factor, ACT_PATH
 using MorkSupercompiler: plan!
 using PathMap: PathMap, UnitVal, UNIT_VAL,
                read_zipper_at_path, zipper_to_next_val!, zipper_path,
@@ -161,7 +158,7 @@ export core_calculus!, core_calculus_at!
 # Stage 1 multi-space + .act lifecycle
 export PREFIX_REGISTRY, register_prefix!, lookup_prefix, unregister_prefix!
 export get_node_shared, derive_prefix_from_name, rebind_to_shared_prefix
-export with_read_permit, with_write_permit, node_status_map
+export with_read_permit, with_write_permit
 export snapshot_space_to_act!, load_act_source, act_exists, set_act_dir!
 export open_node!, close_node!
 export to_sexpr, from_sexpr, to_sexpr_query, _tokenise
