@@ -521,3 +521,7 @@ include("test_metamo.jl")
 # AV, funds, wages, two-tier rent, AF, spreading + Hebbian, governance, fluid,
 # adaptive). The slow Stability convergence probe is gated behind ECAN_SLOW_TESTS=1.
 include("test_ecan.jl")
+
+# ActPC-Chem algorithm tests — lib/ActPC-Chem/ (migrated from PRIMUS_Core,
+# dialect-adapted). AC1–AC7,AC10 core; cross-algo bridges + AG/AC8 are separate.
+include("test_actpc_chem.jl")
