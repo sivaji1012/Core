@@ -74,4 +74,50 @@ qa(s, e) = run_metta(e, s)
         qa(s, "!(add-atom &self (ChemRule b c 3.0))")
         @test qa(s, "!(soup-rule-count)") == [2]
     end
+
+    @testset "AC2 — softmax(τ) selection ∝ exp(w/τ)" begin
+        s = fresh_actpc()
+        qa(s, "!(add-atom &self (ChemRule p1 q1 5.0))")
+        qa(s, "!(add-atom &self (ChemRule p2 q2 2.0))")
+        # P(rule1) = exp(5)/(exp(5)+exp(2)) ≈ 0.95257 ; P(rule2) ≈ 0.04743  (order-free)
+        @test qa(s, "!(softmax-prob (ChemRule p1 q1 5.0) 1.0)")[1] ≈ 0.95257413 atol = 1e-4
+        @test qa(s, "!(softmax-prob (ChemRule p2 q2 2.0) 1.0)")[1] ≈ 0.04742587 atol = 1e-4
+        # low temperature → greedy: picks the max-weight rule for any u (order-free)
+        @test qa(s, "!(get-weight (softmax-select 0.5 0.1))") == [5.0]
+        @test qa(s, "!(get-weight (softmax-select 0.9 0.1))") == [5.0]
+    end
+
+    @testset "AC3/AC5 — soup converges: predictive rule rises, wrong rule decays" begin
+        s = fresh_actpc()
+        qa(s, "!(add-atom &self (ChemRule a b 1.0))")   # good: a→b == actual b ⇒ ε=0
+        qa(s, "!(add-atom &self (ChemRule a x 1.0))")   # bad:  a→x ≠ actual b   ⇒ ε=1
+        for _ in 1:20
+            qa(s, "!(chem-step! a b 0.5)")               # data=a, actual=b, value=0.5
+        end
+        good = qa(s, "!(match &self (ChemRule a b \$w) \$w)")[1]
+        bad = qa(s, "!(match &self (ChemRule a x \$w) \$w)")[1]
+        @test good ≈ 2.0 atol = 1e-6     # rose 1.0 → 2.0 (gain +0.05/step, 20 steps)
+        @test bad ≈ 0.0 atol = 1e-6      # fell 1.0 → 0.0 (clamped at w_min)
+        @test good > bad
+        # replace-in-place: still exactly 2 rules (no duplicate accumulation)
+        @test qa(s, "!(soup-rule-count)") == [2]
+    end
+
+    @testset "bridges — ECAN coupling (load with ecan + ActPC-Chem)" begin
+        s = new_core_space()
+        ef = e -> to_sexpr(eval_metta(from_sexpr(e), s))
+        _register_atom_ops!(ef)
+        load_stdlib!(s)
+        run_metta("!(import! &self (library ecan))", s)
+        run_metta("!(import! &self (library ActPC-Chem))", s)
+        run_metta("!(import! &self (library ActPC-Chem bridges))", s)
+        run_metta("!(add-atom &self (ChemRule a b 5.0))", s)
+        # rule reactivity → ECAN attention: firing on `a` boosts the rule's STI from 0
+        run_metta("!(boost-successful-rules! a)", s)
+        @test run_metta("!(get-sti (ChemRule a b 5.0))", s)[1] > 0.0
+        # the full neighbor-integrated tick runs end-to-end (chain→step→boost→decay)
+        run_metta("!(add-atom &self (ChemRule b c 2.0))", s)
+        r = run_metta("!(chem-cognitive-tick! a)", s)
+        @test r !== nothing && !isempty(r)
+    end
 end

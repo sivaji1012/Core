@@ -4,13 +4,16 @@
 ;;;; chemistry of metagraph rewrite rules — a candidate cognitive kernel for
 ;;;; Hyperon/PRIMUS (Goertzel, arXiv:2412.16547). Spec: docs/specs/actpc_chem_spec.md.
 ;;;;
-;;;; Migration status (from packages/PRIMUS_Core/lib/actpc/, dialect-adapted):
-;;;;   AC1 ✅ weight update   AC2 ⚠ argmax (softmax-τ TODO)   AC3 ✅ per-rule error
-;;;;   AC4 ✅ chaining        AC5 ✅ decay   AC6 ✅ PLN projection   AC7 ⚠ fitness only
-;;;;   AC10 ✅ (trivially local)   AC8/AC9/AC11 — not migrated (bridge/future work)
+;;;; Status (migrated from packages/PRIMUS_Core/lib/actpc/, dialect-adapted, then
+;;;; completed against the spec):
+;;;;   AC1 ✅ weight update   AC2 ✅ softmax-τ (+ greedy best-rule)   AC3 ✅ distance error
+;;;;   AC4 ✅ chaining   AC5 ✅ decay (replace-in-place)   AC6 ✅ PLN projection
+;;;;   AC7 ⚠ fitness only (evolve needs MOSES)   AC10 ✅ (trivially local)
+;;;;   AC8/AC9/AC11 — not here (AC8 = the neural↔symbolic bridge / future work)
 ;;;;
-;;;; Cross-algorithm neighbor coupling (ECAN/MOSES/Fluid) is in bridges.metta,
-;;;; which is NOT imported here — load it explicitly once those libs are present.
+;;;; Cross-algorithm neighbor coupling lives in bridges.metta (NOT imported here):
+;;;;   ECAN boost-sti! WIRED; MOSES evolve / Fluid diffusion DEFERRED-PENDING (deps
+;;;;   not yet in Core). Load bridges.metta explicitly alongside (library ecan).
 ;;;;
 ;;;; Import:  !(import! &self (library ActPC-Chem))
 
