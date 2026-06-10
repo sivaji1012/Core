@@ -173,3 +173,34 @@ single halves on held-out generalization), **S2** (coupled beats parallel-but-un
 specifically on the provably-ambiguous confound set). Guarded against capacity-artifact
 and leakage vacuity. Pass ⇒ task-level cognitive synergy + a real consumer for the
 wired bridge module.
+
+---
+
+## 9. BUILD LOG
+
+**Step 1 — task + pre-build vacuity proofs: PASSED** (2026-06-10,
+`../../experiments/actpc_geom_ac8/ac8_phase2_task.jl`). Collinear protos `proto[s]=s·u`,
+drift `b·(t−1)·u` along the same `u` ⇒ scalar observable `x_t=(s0+(t−1)δ mod K)+b(t−1)`;
+no-wrap ⇒ only `δ+b` is observable. Proven machine-exact: §5.4 confound (twins `(δ+m,b−m)`
+give identical obs, gap 0/9e-16, different tracks); §5.1 barrier (the *same* observation
+`0,3,6,9,12,15` reads as `{δ=1,b=2→0,1,2,3,4,5}` **or** `{δ=3,b=0→0,3,6,9,12,15}` ⇒ no
+obs→symbol map of any capacity is correct on both — informational, not capacity); symbolic-
+alone mis-induces `δ̂=δ+b`; disambiguation info exists only in the mod-K wrap.
+
+**Step 2a — pure-Julia synergy harness: HONEST NEGATIVE** (2026-06-10,
+`../../experiments/actpc_geom_ac8/ac8_phase2_synergy.jl`). Formulation: coupled = joint
+argmin over `(δ,b)`; symbolic-alone = `b=0`; neural-alone = `δ=0`; parallel-uncoupled =
+neural picks `b` then symbolic picks `δ` once. Result: coupled (1,2)/1.00, **symbolic-only
+(1,0)/1.00**, neural-only (0,2)/0.03, **parallel-uncoupled (1,2)/1.00** ⇒ S1=S2 FAIL. Root
+cause: a **linear** drift makes the wrap signal *too accessible* — mis-locating a wrap costs
+≈K², dominating the unexplained ramp, so the drift-blind (`b=0`) search recovers `δ` without
+the bridge. The synergy regime is knife-edge ⇒ violates the gate's robustness spirit. **Not
+tuned to a fake pass.** This is gate-before-build working: the simplest task design was
+falsified *before* the expensive FabricPC + real-soup build.
+
+**Implication → Step 2b (next):** robust synergy needs a drift the single halves CANNOT
+marginalize — **nonlinear / stochastic** (random-walk or context-nonlinear channel) that
+defeats any constrained global fit, yet that a real **neural** net can regress *given* the
+rule's proto-baseline. That requires the actual FabricPC neural half (a grid search cannot
+represent a flexible drift) + the real ActPC-Chem soup. Step 2b = richer-drift task +
+FabricPC + soup, re-running S1/S2/S3.
