@@ -39,3 +39,7 @@
    (if (== $xs ())
        False
        (if (== $x (car-atom $xs)) True (List.member $x (cdr-atom $xs)))))
+
+;; Pair (utilities/pair.metta) — UNTYPED (Core dialect); constructor mkPair + accessors.
+(= (Pair.first  (mkPair $a $b)) $a)
+(= (Pair.second (mkPair $a $b)) $b)
