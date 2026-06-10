@@ -525,3 +525,7 @@ include("test_ecan.jl")
 # ActPC-Chem algorithm tests — lib/ActPC-Chem/ (migrated from PRIMUS_Core,
 # dialect-adapted). AC1–AC7,AC10 core; cross-algo bridges + AG/AC8 are separate.
 include("test_actpc_chem.jl")
+
+# MOSES algorithm tests — lib/MOSES/ (1:1 port of iCog metta-moses, Core-dialect-
+# adapted: Cons/Nil-ADT → Core-native ()-expr lists). Incremental: M0 scaffold + utils.
+include("test_moses.jl")
