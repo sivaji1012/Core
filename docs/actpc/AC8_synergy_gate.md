@@ -214,6 +214,28 @@ drift scale:
   specifically needs the REAL FabricPC PC neural half, whose de-drift is principled so
   parallel fails *structurally* (no rule ⇒ no proto-baseline) not coincidentally.
 
-**→ Step 2b-real (next):** FabricPC PC neural half + real ActPC-Chem soup on THIS path-integral
-task; settle S2 and realize the actual bridge (the joint-inference ideal coupled approximates).
-Heavy env (FabricPC + MeTTaCore + Enzyme), Phase-1 machinery.
+**Step 2b-real — real substrates: S1 weak/non-robust, S2 HONEST NEGATIVE** (2026-06-10).
+Built the env (FabricPC + MeTTaCore, no Enzyme — Linear PC is autodiff-free) and ran the real
+FabricPC PC neural half against (a) the real MeTTa `ActPC-Chem` soup
+(`ac8_phase2b_real.jl`) and (b) the **FactorVSA** associative rule memory (`ac8_phase2b_vsa.jl`).
+- The real MeTTa soup `chem-step!` is **~6 s/call** (measured steady-state) ⇒ an iterative
+  bootstrap × conditions × seeds is ~1 hr, untunable. **Pivoted the symbolic half to the fast
+  subsymbolic VSA substrate** (FactorVSA) — which is also the HDC interlingua the spec specifies,
+  so it's a *more faithful* bridge (both halves vectorial), not just a speedup. (The VSA pivot
+  also surfaced + fixed a real bug: BipolarMAP `bind` is commutative ⇒ undirected edges; a
+  permutation role `ρ(v_c)⊗v_n` makes the transition memory directed.)
+- With a working fast substrate, across drift scales × 6 seeds × two task variants (`T>K` and
+  `T<K`): **S1 is weak and non-robust** (coupled beats symbolic only in a narrow high-drift band,
+  ~3/6 seeds), and **S2 FAILS** — the rule-blind *positional* `parallel-uncoupled` baseline stays
+  competitive with or beats the bridge at essentially every scale. **Root cause:** the drift
+  remains de-driftable *without* the rule (a positional/global proxy captures enough of it), so
+  the error-*exchange* adds no value over running both halves once. Making histories seed-specific
+  (`T<K`) did not fix it.
+
+**Verdict (honest, not p-hacked):** the AC8 bridge *mechanism* is real (Phase-0/1), and an
+idealized *joint* inference shows S1 (pure-Julia `ac8_phase2b_nonlinear`), but **strong
+cognitive synergy (S2: bridge ≫ ensembling) is NOT established** on this rule-induction-under-
+drift family despite multiple principled task variants. S2 demands a channel that is genuinely
+**un-de-driftable without the discrete rule** — an open task-design problem, recorded rather than
+engineered into a false positive. Next would be a task with that property (e.g. a channel whose
+de-drift provably requires the symbol identity, not just its position/statistics).
