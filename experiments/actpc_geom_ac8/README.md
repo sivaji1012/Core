@@ -1,8 +1,9 @@
 # ActPC-Geom + AC8 bridge — runnable research prototypes
 
 These are the executable Julia experiments behind the design specs in
-`packages/Core/../../docs/specs/` (AC8_bridge_gate.md §7–8, actpc_geom_spec.md
-"IMPLEMENTATION RESULT"). Code lives here, NOT under docs/.
+`../../docs/actpc/` (`AC8_bridge_gate.md` §7–8, `AC8_synergy_gate.md` (Phase-2
+capability gate), `actpc_geom_spec.md` "IMPLEMENTATION RESULT"). Specs describe,
+experiments run — code lives here, the specs live under `docs/actpc/`.
 
 - `ac8_phase0_gate.jl`   — AC8 Phase-0 mechanism gate (pure Julia: FabricPC PC +
   toy in-Julia rule soup + HDC cleanup + bridge). G1/G2 pass, 5 seeds.
