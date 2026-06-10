@@ -198,9 +198,22 @@ the bridge. The synergy regime is knife-edge ⇒ violates the gate's robustness 
 tuned to a fake pass.** This is gate-before-build working: the simplest task design was
 falsified *before* the expensive FabricPC + real-soup build.
 
-**Implication → Step 2b (next):** robust synergy needs a drift the single halves CANNOT
-marginalize — **nonlinear / stochastic** (random-walk or context-nonlinear channel) that
-defeats any constrained global fit, yet that a real **neural** net can regress *given* the
-rule's proto-baseline. That requires the actual FabricPC neural half (a grid search cannot
-represent a flexible drift) + the real ActPC-Chem soup. Step 2b = richer-drift task +
-FabricPC + soup, re-running S1/S2/S3.
+**Step 2b — path-integral drift, modality-faithful baselines: PARTIAL POSITIVE** (2026-06-10,
+`../../experiments/actpc_geom_ac8/ac8_phase2b_nonlinear.jl`). Channel = `z_t=Σ_{τ<t}φ(s_τ)`
+(accumulation of a per-symbol increment ⇒ estimating it *requires* the symbol track). Single
+halves made modality-faithful: symbolic = discrete tokens (round→induce, drift-corrupted);
+neural = continuous regression only, no rule. coupled = joint-inference ideal. Sweep over
+drift scale:
+- **S1 HOLDS ROBUSTLY for drift scale ≥ 2** — coupled 1.00 vs symbolic 0.13 (≈chance) /
+  neural 0.12. Large drift destroys the discrete modal-step heuristic; only the continuous
+  joint fit recovers δ (and `corr(φ̂,φ0)=1.0` — it recovers the drift law too). At small scale
+  (≤1) symbolic still recovers δ (zero-mean φ ⇒ modal step = δ): no gap. **The task design is
+  validated for S1.**
+- **S2 NOT cleanly established** — `parallel-uncoupled` recovers δ by luck at some scales
+  (cubic-in-t neural proxy is too crude). S2 (synergy = error-*exchange*, not ensembling)
+  specifically needs the REAL FabricPC PC neural half, whose de-drift is principled so
+  parallel fails *structurally* (no rule ⇒ no proto-baseline) not coincidentally.
+
+**→ Step 2b-real (next):** FabricPC PC neural half + real ActPC-Chem soup on THIS path-integral
+task; settle S2 and realize the actual bridge (the joint-inference ideal coupled approximates).
+Heavy env (FabricPC + MeTTaCore + Enzyme), Phase-1 machinery.
